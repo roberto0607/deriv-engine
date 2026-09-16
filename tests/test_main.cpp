@@ -4,6 +4,7 @@
 #include "deriv-engine/black_scholes.hpp"
 #include "deriv-engine/greeks.hpp"
 #include <cmath>
+#include "deriv-engine/day_count.hpp"
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -165,4 +166,20 @@ TEST_CASE("Negative interest rate does not break pricing", "[black_scholes][edge
     double rhs = market.spot * std::exp(-market.dividend_yield * call.time_to_expiry)
                - call.strike * std::exp(-market.risk_free_rate * call.time_to_expiry);
     REQUIRE(lhs == Catch::Approx(rhs).epsilon(0.0001));
+}
+
+TEST_CASE("Day count conventions compute correct year fractions", "[day_count]") {
+    // 365 days under ACT/365 should be exactly 1 year
+    REQUIRE(deriv::year_fraction(365, deriv::DayCountConvention::Act365) == Catch::Approx(1.0));
+
+    // 365 days under ACT/360 should be slightly MORE than 1 year
+    // (since we're dividing by a smaller number, 360 instead of 365)
+    REQUIRE(deriv::year_fraction(365, deriv::DayCountConvention::Act360) == Catch::Approx(365.0 / 360.0));
+
+    // 90 days, a common short-term horizon, under both conventions
+    REQUIRE(deriv::year_fraction(90, deriv::DayCountConvention::Act365) == Catch::Approx(90.0 / 365.0));
+    REQUIRE(deriv::year_fraction(90, deriv::DayCountConvention::Act360) == Catch::Approx(90.0 / 360.0));
+
+    // 0 days (option expires today) should give exactly 0
+    REQUIRE(deriv::year_fraction(0, deriv::DayCountConvention::Act365) == Catch::Approx(0.0));
 }
