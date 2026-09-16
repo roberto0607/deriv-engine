@@ -8,6 +8,7 @@
 #include "deriv-engine/tree_pricer.hpp"
 #include "deriv-engine/monte_carlo.hpp"
 #include "deriv-engine/adouble.hpp"
+#include <chrono>
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -333,4 +334,51 @@ TEST_CASE("Monte Carlo AAD theta and rho match analytical Greeks", "[aad][monte_
     REQUIRE(std::abs(mc.vega - analytical.vega) < 2.0);
     REQUIRE(std::abs(mc.theta - analytical.theta) < 1.0);
     REQUIRE(std::abs(mc.rho - analytical.rho) < 2.0);
+}
+
+TEST_CASE("AAD is faster than bump-and-revalue for computing 4 Greeks", "[.manual][aad][performance]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+    const int num_paths = 100000;
+    const double bump = 0.01;
+    const unsigned int shared_seed = 42;  // fixed, so base and bumped runs share the same random draws
+
+    auto bump_start = std::chrono::high_resolution_clock::now();
+
+    deriv::MonteCarloResult base = deriv::monte_carlo_price(option, market, num_paths, false, shared_seed);
+
+    deriv::MarketData bumped_S = market;
+    bumped_S.spot += bump;
+    deriv::MonteCarloResult r_S = deriv::monte_carlo_price(option, bumped_S, num_paths, false, shared_seed);
+    double bump_delta = (r_S.price - base.price) / bump;
+
+    deriv::MarketData bumped_sigma = market;
+    bumped_sigma.volatility += bump;
+    deriv::MonteCarloResult r_sigma = deriv::monte_carlo_price(option, bumped_sigma, num_paths, false, shared_seed);
+    double bump_vega = (r_sigma.price - base.price) / bump;
+
+    deriv::MarketData bumped_r = market;
+    bumped_r.risk_free_rate += bump;
+    deriv::MonteCarloResult r_r = deriv::monte_carlo_price(option, bumped_r, num_paths, false, shared_seed);
+    double bump_rho = (r_r.price - base.price) / bump;
+
+    deriv::EuropeanOption bumped_T = option;
+    bumped_T.time_to_expiry -= bump;
+    deriv::MonteCarloResult r_T = deriv::monte_carlo_price(bumped_T, market, num_paths, false, shared_seed);
+    double bump_theta = (r_T.price - base.price) / bump;
+
+    auto bump_end = std::chrono::high_resolution_clock::now();
+    double bump_ms = std::chrono::duration<double, std::milli>(bump_end - bump_start).count();
+
+    auto aad_start = std::chrono::high_resolution_clock::now();
+    deriv::MonteCarloGreeksResult aad = deriv::monte_carlo_greeks(option, market, num_paths);
+    auto aad_end = std::chrono::high_resolution_clock::now();
+    double aad_ms = std::chrono::duration<double, std::milli>(aad_end - aad_start).count();
+
+    WARN("Bump-and-revalue (5 runs): " << bump_ms << " ms");
+    WARN("AAD (1 run): " << aad_ms << " ms");
+    WARN("Speedup: " << (bump_ms / aad_ms) << "x");
+    WARN("Bump delta: " << bump_delta << "  AAD delta: " << aad.delta);
+
+    REQUIRE(std::abs(bump_delta - aad.delta) < 0.05);
 }

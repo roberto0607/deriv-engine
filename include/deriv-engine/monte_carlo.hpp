@@ -11,7 +11,7 @@ struct MonteCarloResult {
 };
 
 MonteCarloResult monte_carlo_price(const EuropeanOption& option, const MarketData& market,
-                                    int num_paths, bool antithetic = true);
+                                    int num_paths, bool antithetic = true, unsigned int seed = 0);
 
 MonteCarloResult monte_carlo_price_control_variate(const EuropeanOption& option, const MarketData& market,
                                                      int num_paths);

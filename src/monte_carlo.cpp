@@ -37,7 +37,7 @@ ADouble ad_payoff(const ADouble& S_T, double K, OptionType type) {
 }  // namespace
 
 MonteCarloResult monte_carlo_price(const EuropeanOption& option, const MarketData& market,
-                                    int num_paths, bool antithetic) {
+                                    int num_paths, bool antithetic, unsigned int seed) {
     const double S = market.spot;
     const double K = option.strike;
     const double T = option.time_to_expiry;
@@ -48,7 +48,12 @@ MonteCarloResult monte_carlo_price(const EuropeanOption& option, const MarketDat
     const double drift = (r - q - 0.5 * sigma * sigma) * T;
     const double diffusion = sigma * std::sqrt(T);
 
-    std::mt19937 rng(std::random_device{}());
+    // If seed==0 (the default), use a genuinely random seed each call.
+    // If a nonzero seed is explicitly passed, use it — this lets two
+    // calls (e.g. a base case and a bumped case) reproduce the EXACT
+    // same underlying random draws, which finite-difference bumping
+    // requires to isolate the effect of the bumped input alone.
+    std::mt19937 rng(seed == 0 ? std::random_device{}() : seed);
     std::normal_distribution<double> normal(0.0, 1.0);
 
     std::vector<double> payoffs;
