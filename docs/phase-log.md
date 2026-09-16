@@ -149,16 +149,55 @@ are higher-value differentiators for the resume goal.
 
 ---
 
-## Phase 3 — Monte Carlo core + variance reduction
+## Phase 3 — Monte Carlo core + variance reduction (done)
 
 **What was built:**
-
+- `monte_carlo_price()` — European option pricing via direct sampling
+  of GBM's terminal distribution (no path-stepping needed for
+  European payoffs), with `MonteCarloResult` reporting both price and
+  standard error
+- Antithetic variates (default-on flag) — pairs each random draw Z
+  with its negation −Z to reduce variance for the same draw count
+- `monte_carlo_price_control_variate()` — uses the simulated terminal
+  price S_T as a control variate, with its known exact expectation
+  E[S_T] = S·e^((r−q)T), estimating the optimal control coefficient
+  from sample covariance/variance
 
 **Validated against:**
-
+- Convergence to Black-Scholes closed-form for both European calls
+  and puts, using the statistically correct test (price within 3
+  standard errors of the known true value, not an arbitrary fixed
+  tolerance) — 100,000 paths per test
+- Antithetic variates confirmed to reduce standard error vs. plain MC
+  on identical inputs
+- Control variate confirmed to reduce standard error vs. plain MC,
+  and its adjusted price still validated against Black-Scholes within
+  statistical tolerance
+- Measured variance reduction on a reference case (S=100, K=100, T=1,
+  r=5%, vol=20%, 50,000 paths): plain SE=0.0663, antithetic
+  SE=0.0464 (~30% reduction), control variate SE=0.0251 — a **6.97x
+  variance reduction ratio** over plain Monte Carlo
 
 **Defend this:**
-
+Can explain why European options can be priced by sampling GBM's
+terminal distribution directly, in one random draw per path, rather
+than stepping through many small time increments — the payoff only
+depends on S_T, and GBM's terminal distribution is known exactly in
+closed form. Can explain why this changes for path-dependent payoffs
+(deferred to the Longstaff-Schwartz phase, which needs prices at
+intermediate exercise dates, not just expiry). Can explain why a
+Monte Carlo price must be reported with its standard error, and why
+validating it against Black-Scholes requires a statistical tolerance
+(within N standard errors) rather than an arbitrary fixed epsilon —
+this is a fundamentally different kind of correctness check than the
+deterministic tree and closed-form tests. Can explain both variance
+reduction techniques mechanically: antithetic variates exploit the
+perfect negative correlation between Z and −Z; control variates
+exploit the correlation between the option payoff and a
+different, exactly-computable quantity (S_T) to correct each path's
+estimate using its known error on that quantity. Can state and defend
+the measured 6.97x variance reduction ratio as a concrete, reproducible
+result, not just a qualitative claim.
 
 ---
 

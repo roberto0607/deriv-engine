@@ -7,6 +7,7 @@
 #include "deriv-engine/day_count.hpp"
 #include "deriv-engine/tree_pricer.hpp"
 #include "deriv-engine/monte_carlo.hpp"
+#include "deriv-engine/adouble.hpp"
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -286,3 +287,23 @@ TEST_CASE("Control variate reduces standard error vs plain Monte Carlo", "[monte
 //     WARN("Control variate SE: " << cv.standard_error);
 //     WARN("CV variance reduction ratio: " << (plain.standard_error * plain.standard_error) / (cv.standard_error * cv.standard_error));
 // }
+
+TEST_CASE("AAD tape reproduces hand-computed adjoints for y = a*b + c", "[aad]") {
+    deriv::get_tape().clear();
+
+    deriv::ADouble a(3.0);
+    deriv::ADouble b(4.0);
+    deriv::ADouble c(5.0);
+
+    deriv::ADouble t1 = a * b;
+    deriv::ADouble y = t1 + c;
+
+    REQUIRE(y.value == Catch::Approx(17.0));
+
+    deriv::get_tape().backward(y.idx);
+    auto& adj = deriv::get_tape().adjoints;
+
+    REQUIRE(adj[a.idx] == Catch::Approx(4.0));  // dy/da = b = 4
+    REQUIRE(adj[b.idx] == Catch::Approx(3.0));  // dy/db = a = 3
+    REQUIRE(adj[c.idx] == Catch::Approx(1.0));  // dy/dc = 1
+}
