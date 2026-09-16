@@ -272,3 +272,17 @@ TEST_CASE("Control variate reduces standard error vs plain Monte Carlo", "[monte
     double diff = std::abs(with_cv.price - bs_price);
     REQUIRE(diff < 3.0 * with_cv.standard_error);
 }
+
+// TEST_CASE("Print variance reduction ratio for docs", "[.manual]") {
+//     deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+//     deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+//     deriv::MonteCarloResult plain = deriv::monte_carlo_price(option, market, 50000, false);
+//     deriv::MonteCarloResult antithetic = deriv::monte_carlo_price(option, market, 50000, true);
+//     deriv::MonteCarloResult cv = deriv::monte_carlo_price_control_variate(option, market, 50000);
+
+//     WARN("Plain SE: " << plain.standard_error);
+//     WARN("Antithetic SE: " << antithetic.standard_error);
+//     WARN("Control variate SE: " << cv.standard_error);
+//     WARN("CV variance reduction ratio: " << (plain.standard_error * plain.standard_error) / (cv.standard_error * cv.standard_error));
+// }
