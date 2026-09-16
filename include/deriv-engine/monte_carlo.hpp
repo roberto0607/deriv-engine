@@ -20,6 +20,8 @@ struct MonteCarloGreeksResult {
     double price;
     double delta;
     double vega;
+    double theta;
+    double rho;
     double standard_error;
 };
 

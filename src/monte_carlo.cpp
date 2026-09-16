@@ -154,58 +154,70 @@ MonteCarloResult monte_carlo_price_control_variate(const EuropeanOption& option,
 MonteCarloGreeksResult monte_carlo_greeks(const EuropeanOption& option, const MarketData& market,
                                            int num_paths) {
     const double K = option.strike;
-    const double T = option.time_to_expiry;
-    const double r = market.risk_free_rate;
-    const double q = market.dividend_yield;
 
     std::mt19937 rng(std::random_device{}());
     std::normal_distribution<double> normal(0.0, 1.0);
 
-    double price_sum = 0.0;
-    double delta_sum = 0.0;
-    double vega_sum = 0.0;
-    std::vector<double> undiscounted_payoffs(num_paths);
+    double price_sum = 0.0, delta_sum = 0.0, vega_sum = 0.0, theta_sum = 0.0, rho_sum = 0.0;
+    std::vector<double> path_prices(num_paths);
 
     for (int i = 0; i < num_paths; ++i) {
         get_tape().clear();
 
         ADouble S(market.spot);
         ADouble sigma(market.volatility);
+        ADouble r(market.risk_free_rate);
+        ADouble T(option.time_to_expiry);
+        double q = market.dividend_yield;  // held plain — not a Greek we report here
 
-        double z = normal(rng);
+        double z = normal(rng);  // held FIXED while differentiating — this is what
+                                  // makes it "pathwise" differentiation
 
         ADouble half = ADouble(0.5) * sigma * sigma;
-        ADouble drift = (ADouble(r - q) - half) * T;
-        ADouble diffusion = sigma * std::sqrt(T) * z;
+        ADouble drift = (r - ADouble(q) - half) * T;
+        ADouble diffusion = sigma * ad_sqrt(T) * z;
         ADouble exponent = drift + diffusion;
         ADouble S_T = S * ad_exp(exponent);
 
         ADouble path_payoff = ad_payoff(S_T, K, option.type);
 
-        get_tape().backward(path_payoff.idx);
+        // Discounting is now PART of the tape, not a separate multiply
+        // afterward. This means the backward pass automatically captures
+        // both ways r affects the price: through the drift (inside the
+        // payoff) and through discounting itself — the chain rule handles
+        // combining those two effects for us.
+        ADouble discount = ad_exp(-(r * T));
+        ADouble discounted_price = discount * path_payoff;
+
+        get_tape().backward(discounted_price.idx);
         auto& adj = get_tape().adjoints;
 
-        undiscounted_payoffs[i] = path_payoff.value;
-        price_sum += path_payoff.value;
+        path_prices[i] = discounted_price.value;
+        price_sum += discounted_price.value;
         delta_sum += adj[S.idx];
         vega_sum += adj[sigma.idx];
+        rho_sum += adj[r.idx];
+        // theta is conventionally the sensitivity to CALENDAR TIME passing,
+        // not to time-to-expiry T. Since T = expiry - now, dT/d(calendar
+        // time) = -1, so theta = -d(price)/dT.
+        theta_sum += -adj[T.idx];
     }
 
-    const double discount = std::exp(-r * T);
-    double mean_payoff = price_sum / num_paths;
-    double price = discount * mean_payoff;
-    double delta = discount * (delta_sum / num_paths);
-    double vega = discount * (vega_sum / num_paths);
+    double price = price_sum / num_paths;
+    double delta = delta_sum / num_paths;
+    double vega = vega_sum / num_paths;
+    double theta = theta_sum / num_paths;
+    double rho = rho_sum / num_paths;
 
     double sq_diff_sum = 0.0;
-    for (double p : undiscounted_payoffs) {
-        double diff = p - mean_payoff;
+    for (double p : path_prices) {
+        double diff = p - price;
         sq_diff_sum += diff * diff;
     }
     double sample_variance = sq_diff_sum / (num_paths - 1);
-    double standard_error = discount * std::sqrt(sample_variance / num_paths);
+    double standard_error = std::sqrt(sample_variance / num_paths);
 
-    return MonteCarloGreeksResult{price, delta, vega, standard_error};
+    return MonteCarloGreeksResult{price, delta, vega, theta, rho, standard_error};
 }
 
 }  // namespace derive
