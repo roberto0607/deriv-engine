@@ -35,35 +35,60 @@ build/test sequence on a fresh container on every push.
 
 ---
 
-## Phase 1 — Black-Scholes closed-form (in progress)
+## Phase 1 — Black-Scholes closed-form (done)
 
 **What was built:**
 - `MarketData` struct (spot, risk-free rate, dividend yield, volatility)
   and `EuropeanOption` struct (strike, time-to-expiry, call/put type)
 - `black_scholes_price()` — closed-form pricing for European calls and
-  puts, using the standard d1/d2 formulation
-- Internal `norm_cdf()` helper implementing the cumulative normal
-  distribution via `std::erfc`
+  puts
+- `black_scholes_greeks()` — analytical delta, gamma, vega, theta, rho
+- Internal `norm_cdf()` and `norm_pdf()` helpers
+- Guard against division-by-zero at T<=0 in both pricing and Greeks
+  (see bug note below)
 
 **Validated against:**
 - Standard textbook reference case (S=100, K=100, T=1yr, r=5%, vol=20%):
-  call = 10.4506, put = 5.5735 — both matched within 0.1% tolerance
-- Still pending: put-call parity check, and the edge-case suite
-  (near-zero vol, deep ITM/OTM, near-expiry, zero/negative rates)
+  call = 10.4506, put = 5.5735 — matched within 0.1% tolerance
+- Same reference case Greeks (call delta=0.6368, gamma=0.0188,
+  vega=37.52, theta=-6.414, rho=53.23; put delta=-0.3632, theta=-1.658,
+  rho=-41.89) — all matched within tolerance
+- Put-call parity (C - P = S*e^(-qT) - K*e^(-rT)) holds for an
+  out-of-the-money case with nonzero dividend yield, not just the
+  original at-the-money reference case
+- Zero-time-to-expiry edge case for both pricing and Greeks — see bug
+  note
+
+**Bug found and fixed:**
+At T=0 (or very close to it), the original d1/d2 formula divides by
+`sigma * sqrt(T)`, producing `nan`. Caught by an explicit test
+(`REQUIRE(std::isfinite(price))`) rather than by inspection. Fixed by
+adding an early-return guard: at T<=1e-8, price returns intrinsic value
+directly (max(S-K,0) for a call), and Greeks return the boundary values
+(delta = 0/1/-1 depending on moneyness, all other Greeks = 0) — this is
+the mathematically correct limit as T->0, not just a defensive hack.
 
 **Defend this:**
-Can explain the formula at both levels: the intuition (a call's price is
-the expected value of the asset in the exercise scenarios, minus the
-discounted strike weighted by probability of exercise) and the precise
-mechanics (N(d2) is the risk-neutral probability of finishing
+Can explain the formula at both levels: the intuition (a call's price
+is the expected value of the asset in the exercise scenarios, minus
+the discounted strike weighted by probability of exercise) and the
+precise mechanics (N(d2) is the risk-neutral probability of finishing
 in-the-money; d1 differs from d2 by one sigma*sqrt(T) term because it
 weights the expected asset price rather than pure exercise probability,
 correcting for the log-normal distribution's mean being pulled above
-its median by volatility). Can also explain why higher volatility
-always increases option value regardless of call/put — capped downside,
-open-ended upside. Not yet done: Greeks derivation, and full whiteboard
-derivation of the BS PDE itself from the replicating-portfolio argument
-— that's the remaining gap before this phase is genuinely closed out.
+its median by volatility). Can explain each Greek in plain terms:
+delta as price-sensitivity to the underlying, gamma as delta's own
+rate of change, vega as sensitivity to volatility specifically (not
+to be confused with theta), theta as time decay, rho as rate
+sensitivity. Can derive the Black-Scholes PDE from the replicating-
+portfolio / delta-hedging argument via Ito's Lemma, and explain why
+the stock's drift term cancels out entirely (risk-neutral pricing).
+Can explain why higher volatility always increases option value
+regardless of call/put — capped downside, open-ended upside.
+Remaining gap: day-count conventions and discrete dividend handling
+not yet implemented; deep ITM/OTM and negative-rate cases not yet
+explicitly tested, though the T=0 fix suggests the formula is
+otherwise sound.
 
 ---
 

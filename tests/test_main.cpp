@@ -116,3 +116,53 @@ TEST_CASE("Greeks handle zero time to expiry without crashing", "[greeks][edge_c
     REQUIRE(g.delta == Catch::Approx(1.0));
     REQUIRE(g.gamma == Catch::Approx(0.0));
 }
+
+TEST_CASE("Deep in-the-money call behaves sensibly", "[black_scholes][edge_case]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{1.0, 1.0, deriv::OptionType::Call};  // K=1, way ITM
+
+    double price = deriv::black_scholes_price(option, market);
+    deriv::Greeks g = deriv::black_scholes_greeks(option, market);
+
+    // Deep ITM call should behave almost exactly like the forward:
+    // price ≈ S - K*e^(-rT), delta ≈ 1
+    double expected_price = market.spot - option.strike * std::exp(-market.risk_free_rate * option.time_to_expiry);
+
+    REQUIRE(std::isfinite(price));
+    REQUIRE(price == Catch::Approx(expected_price).epsilon(0.01));
+    REQUIRE(g.delta == Catch::Approx(1.0).epsilon(0.001));
+    REQUIRE(g.gamma == Catch::Approx(0.0).margin(0.001));
+}
+
+TEST_CASE("Deep out-of-the-money call behaves sensibly", "[black_scholes][edge_case]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{10000.0, 1.0, deriv::OptionType::Call};  // K=10000, way OTM
+
+    double price = deriv::black_scholes_price(option, market);
+    deriv::Greeks g = deriv::black_scholes_greeks(option, market);
+
+    // Deep OTM call is worth almost nothing, delta near 0
+    REQUIRE(std::isfinite(price));
+    REQUIRE(price == Catch::Approx(0.0).margin(0.01));
+    REQUIRE(g.delta == Catch::Approx(0.0).margin(0.001));
+}
+
+TEST_CASE("Negative interest rate does not break pricing", "[black_scholes][edge_case]") {
+    deriv::MarketData market{100.0, -0.01, 0.0, 0.2};  // negative rate
+    deriv::EuropeanOption call{100.0, 1.0, deriv::OptionType::Call};
+    deriv::EuropeanOption put{100.0, 1.0, deriv::OptionType::Put};
+
+    double call_price = deriv::black_scholes_price(call, market);
+    double put_price = deriv::black_scholes_price(put, market);
+
+    REQUIRE(std::isfinite(call_price));
+    REQUIRE(std::isfinite(put_price));
+    REQUIRE(call_price > 0.0);
+    REQUIRE(put_price > 0.0);
+
+    // Put-call parity should still hold under a negative rate
+    double lhs = call_price - put_price;
+    double rhs = market.spot * std::exp(-market.dividend_yield * call.time_to_expiry)
+               - call.strike * std::exp(-market.risk_free_rate * call.time_to_expiry);
+    REQUIRE(lhs == Catch::Approx(rhs).epsilon(0.0001));
+}
