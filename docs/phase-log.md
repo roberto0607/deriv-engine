@@ -277,16 +277,57 @@ deliberately not attempted via AAD in this phase.
 
 ---
 
-## Phase 5 — Delta-hedging PnL simulation
+## Phase 5 — Delta-hedging PnL simulation (done)
 
 **What was built:**
-
+- `simulate_delta_hedge()` — simulates one BTC price path, recomputing
+  delta and rebalancing the hedge at each of `num_rebalances`
+  evenly-spaced points, tracking the hedging account's cash flow
+  (trades + risk-free interest) separately from the premium and the
+  final obligation
+- Reused Phase 1 analytical Greeks (recomputed at each rebalancing
+  point, at the current spot and remaining time) and Phase 3's GBM
+  step logic
 
 **Validated against:**
+- Single-path run: finite PnL, correct price-path length
+- 2000-path distribution: mean hedging PnL ≈ 0 (small relative to the
+  option's own price), confirming the hedge breaks even on average
+- Rebalancing frequency comparison: hedging error standard deviation
+  shrinks from 1.95 (monthly) to 0.94 (weekly) to 0.44 (daily) —
+  roughly a 4.5x reduction from monthly to daily, consistent with the
+  theoretical √(dt) scaling of discretization-driven hedging error
 
+**Bug found and fixed:**
+The premium was double-counted in the PnL formula — folded into the
+initial `cash` value and then subtracted again at the end. A
+single-path test first showed a suspiciously large PnL (-11.12,
+notably close to -theoretical_price); the 2000-path distribution test
+confirmed this was systematic (mean ≈ -11 across all paths), not
+random noise, which is what made it identifiable as a real bug rather
+than expected variance. Fixed by tracking the hedging account
+separately from zero and combining premium, hedging account, and
+obligation as three distinct terms only once, at the end.
 
 **Defend this:**
-
+Can explain the hedging setup: the option writer receives the premium
+upfront and is the party who needs to hedge, since the buyer's
+obligation ends at payment. Can explain why cash earns the risk-free
+rate between rebalances and why omitting this would make the
+simulation wrong. Can explain why a single-path PnL check is
+insufficient to validate a random simulation, and why a distribution
+check across many paths was necessary to confirm both correctness (the
+premium bug) and expected behavior (mean near zero). Can explain the
+rebalancing-frequency result concretely: more frequent rebalancing
+reduces hedging error because it more closely approximates the
+continuous hedging assumed in the original Black-Scholes derivation,
+and can connect the roughly-halving pattern at each ~4-5x frequency
+increase to the theoretical √(dt) scaling rather than treating it as
+just "smaller error, more rebalances." Can walk through the
+double-counted-premium bug end to end: the symptom, why the
+suspicious magnitude was the first clue, why a distribution test (not
+just a single path) was needed to distinguish "systematic bug" from
+"unlucky random path," and the actual fix.
 
 ---
 

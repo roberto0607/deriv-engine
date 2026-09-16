@@ -170,3 +170,68 @@ that additional complexity: it would add depth to a technique already
 proven working (AAD) rather than covering new ground. Gamma remains
 available via the exact analytical Black-Scholes formula (Phase 1)
 for any downstream use, such as the delta-hedging simulation.
+
+## Delta-hedging simulation
+
+**Setup:**
+Models the standard hedging scenario: the option is SOLD (written),
+receiving the theoretical Black-Scholes premium upfront. The writer is
+the party exposed to risk and needs to hedge; the buyer has no further
+obligation after paying the premium. At each of `num_rebalances`
+evenly-spaced points between today and expiry, delta is recomputed at
+the current spot and remaining time, and the BTC hedge position is
+traded to match it. Cash in the hedging account earns the risk-free
+rate between rebalances.
+
+**Why the PnL calculation needed three separate quantities, not one
+running balance:**
+The premium received, the hedging account's trading activity, and the
+final obligation owed at expiry are three logically distinct things.
+Mixing the premium directly into the same running `cash` variable as
+the trading activity made the final comparison ambiguous — see bug
+note below. Keeping them separate (hedging account tracked from zero,
+premium grown at the risk-free rate, obligation computed independently
+at expiry, then combined once at the very end) is what makes the
+final PnL calculation correct and auditable.
+
+**Validated against:**
+- Single-path sanity check: simulation runs, produces a finite PnL
+- Distribution check across 2000 simulated paths: mean hedging PnL
+  ≈ 0 (within a small fraction of the option's own price), confirming
+  the hedge breaks even on average as theory predicts
+- Rebalancing frequency comparison: hedging error (PnL standard
+  deviation) shrinks as rebalancing gets more frequent — monthly (12
+  rebalances) stdev=1.95, weekly (52) stdev=0.94, daily (252)
+  stdev=0.44. Roughly a 4.5x reduction from monthly to daily.
+  Qualitatively consistent with the theoretical result that
+  discretization-driven hedging error scales with √(dt) — each ~4-5x
+  increase in rebalancing frequency roughly halved the standard
+  deviation, matching a square-root relationship rather than a linear
+  one.
+
+**Bug found and fixed:**
+The first implementation initialized the hedging account's `cash`
+directly with the theoretical premium, then mixed all subsequent
+trading activity into that same variable, then subtracted the premium
+(grown at the risk-free rate) again at the end to compute final PnL.
+This double-counted the premium's role — once implicitly via the
+initial value, once explicitly in the final subtraction. Symptom: a
+single-path test showed PnL of -11.12 against a theoretical price of
+10.45 (suspiciously close to -theoretical_price, the actual tell); a
+2000-path distribution test then confirmed this wasn't noise — the
+mean PnL was consistently ≈ -11 across all paths, a systematic bias
+rather than random variation. Fixed by tracking the hedging account
+from zero, and combining premium + hedging account + obligation as
+three separate terms only once, at the very end. Post-fix, mean PnL
+across 2000 paths landed at approximately 0.02, as expected.
+
+**Why this connects back to Black-Scholes' assumptions:**
+The original Black-Scholes derivation (Phase 1) assumes continuous
+hedging — rebalancing infinitely often. The nonzero standard deviation
+measured here, even at 252 rebalances (daily, roughly the most
+frequent a real desk would practically do), is the direct, measured
+gap between that theoretical idealization and what's achievable with
+discrete rebalancing. This is the same PDE-derivation argument from
+Phase 1 made empirically concrete: the tighter the rebalancing
+interval, the closer the realized outcome tracks the theoretical
+price, exactly as the continuous-hedging assumption predicts.
