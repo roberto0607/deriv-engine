@@ -9,6 +9,7 @@
 #include "deriv-engine/monte_carlo.hpp"
 #include "deriv-engine/adouble.hpp"
 #include <chrono>
+#include "deriv-engine/hedging.hpp"
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -381,4 +382,50 @@ TEST_CASE("AAD is faster than bump-and-revalue for computing 4 Greeks", "[.manua
     WARN("Bump delta: " << bump_delta << "  AAD delta: " << aad.delta);
 
     REQUIRE(std::abs(bump_delta - aad.delta) < 0.05);
+}
+
+TEST_CASE("Delta hedge simulation runs and produces a finite PnL", "[hedging]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    deriv::HedgeSimResult result = deriv::simulate_delta_hedge(option, market, 252, 42);  // 252 trading days
+
+    REQUIRE(std::isfinite(result.final_pnl));
+    REQUIRE(result.price_path.size() == 253);  // 252 steps + starting price
+    WARN("Final PnL from one hedged path: " << result.final_pnl);
+    WARN("Theoretical price: " << result.theoretical_price);
+}
+
+TEST_CASE("Delta hedge PnL distribution is centered near zero with reasonable spread", "[hedging]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    const int num_sims = 2000;
+    std::vector<double> pnls;
+    pnls.reserve(num_sims);
+
+    for (int i = 0; i < num_sims; ++i) {
+        deriv::HedgeSimResult result = deriv::simulate_delta_hedge(option, market, 252, 0);  // seed=0: fresh randomness each run
+        pnls.push_back(result.final_pnl);
+    }
+
+    double mean = 0.0;
+    for (double p : pnls) mean += p;
+    mean /= pnls.size();
+
+    double sq_diff_sum = 0.0;
+    for (double p : pnls) {
+        double diff = p - mean;
+        sq_diff_sum += diff * diff;
+    }
+    double stdev = std::sqrt(sq_diff_sum / (pnls.size() - 1));
+
+    WARN("Mean hedging PnL across " << num_sims << " paths: " << mean);
+    WARN("Std dev of hedging PnL: " << stdev);
+
+    // The mean PnL should be small relative to the option's own price —
+    // hedging should roughly break even on average, not systematically
+    // lose or gain a large amount.
+    double theoretical_price = deriv::black_scholes_price(option, market);
+    REQUIRE(std::abs(mean) < 0.15 * theoretical_price);
 }
