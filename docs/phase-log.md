@@ -108,15 +108,43 @@ resolved and tested, or explicitly and defensibly scoped out.
 
 ---
 
-## Phase 2 — Tree pricers
+## Phase 2 — Tree pricers (done)
 
 **What was built:**
-
+- `AmericanOption` struct, added alongside `EuropeanOption` in
+  instrument.hpp — separate types rather than a shared struct with an
+  exercise-style flag, so the compiler enforces correct usage
+- `binomial_tree_price()` — CRR binomial tree, overloaded for both
+  `EuropeanOption` and `AmericanOption`, sharing a single internal
+  `run_tree()` implementation controlled by an early_exercise flag
+- Risk-neutral up/down move factors (u, d=1/u) and risk-neutral
+  probability p, including the dividend yield q in the probability
+  calculation
 
 **Validated against:**
-
+- Convergence to Black-Scholes closed-form for a European call: within
+  2% at 10 steps, within 0.1% at 500 steps
+- Convergence to Black-Scholes closed-form for a European put: within
+  0.1% at 500 steps
+- American put price ≥ European put price under a nonzero dividend
+  yield (deliberately not tested on a call, since American calls on
+  non-dividend-paying assets are never optimal to exercise early — the
+  test would pass trivially without proving anything)
 
 **Defend this:**
+Can explain why d=1/u specifically makes the tree recombine — an
+up-then-down path lands on the same price node as down-then-up, so
+there are only N+1 distinct nodes at step N instead of 2^N distinct
+paths, which is what makes the tree computationally tractable at all.
+Can explain why trees can price American options and closed-form
+cannot: at every node walking backward from expiry, the tree compares
+continuation value against immediate exercise value and takes the
+max, a node-by-node decision closed-form has no mechanism for. Can
+explain why early exercise only matters for puts (or dividend-paying
+calls), not non-dividend calls. Trinomial trees deliberately deferred
+— binomial with sufficient steps meets this project's accuracy needs,
+and remaining time is prioritized toward Monte Carlo and AAD, which
+are higher-value differentiators for the resume goal.
 
 
 ---

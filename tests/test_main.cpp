@@ -6,6 +6,7 @@
 #include <cmath>
 #include "deriv-engine/day_count.hpp"
 #include "deriv-engine/tree_pricer.hpp"
+#include "deriv-engine/monte_carlo.hpp"
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -219,4 +220,41 @@ TEST_CASE("American option is worth at least as much as European", "[tree]") {
     double amer_price = deriv::binomial_tree_price(amer_put, market, 500);
 
     REQUIRE(amer_price >= euro_price);
+}
+
+TEST_CASE("Monte Carlo converges to Black-Scholes for European call", "[monte_carlo][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    deriv::MonteCarloResult mc = deriv::monte_carlo_price(option, market, 100000);
+
+    // Check the MC price is within a few standard errors of the true price —
+    // this is the statistically correct way to validate a random estimate,
+    // rather than picking an arbitrary tolerance out of thin air.
+    double diff = std::abs(mc.price - bs_price);
+    REQUIRE(diff < 3.0 * mc.standard_error);
+}
+
+TEST_CASE("Monte Carlo converges to Black-Scholes for European put", "[monte_carlo][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Put};
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    deriv::MonteCarloResult mc = deriv::monte_carlo_price(option, market, 100000);
+
+    double diff = std::abs(mc.price - bs_price);
+    REQUIRE(diff < 3.0 * mc.standard_error);
+}
+
+TEST_CASE("Antithetic variates reduce standard error", "[monte_carlo]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    deriv::MonteCarloResult with_antithetic = deriv::monte_carlo_price(option, market, 10000, true);
+    deriv::MonteCarloResult without_antithetic = deriv::monte_carlo_price(option, market, 10000, false);
+
+    // Antithetic variates should produce a tighter (smaller) standard error
+    // for a comparable number of total random draws
+    REQUIRE(with_antithetic.standard_error < without_antithetic.standard_error);
 }
