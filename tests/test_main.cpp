@@ -307,3 +307,17 @@ TEST_CASE("AAD tape reproduces hand-computed adjoints for y = a*b + c", "[aad]")
     REQUIRE(adj[b.idx] == Catch::Approx(3.0));  // dy/db = a = 3
     REQUIRE(adj[c.idx] == Catch::Approx(1.0));  // dy/dc = 1
 }
+
+TEST_CASE("Monte Carlo AAD delta and vega match analytical Greeks", "[aad][monte_carlo]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    deriv::Greeks analytical = deriv::black_scholes_greeks(option, market);
+    deriv::MonteCarloGreeksResult mc = deriv::monte_carlo_greeks(option, market, 100000);
+
+    // Delta and vega should be within a few standard errors of the
+    // known-correct analytical values — same statistical validation
+    // approach as pricing itself.
+    REQUIRE(std::abs(mc.delta - analytical.delta) < 0.02);
+    REQUIRE(std::abs(mc.vega - analytical.vega) < 2.0);
+}

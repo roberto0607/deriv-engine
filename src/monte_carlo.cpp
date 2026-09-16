@@ -1,4 +1,5 @@
 #include "deriv-engine/monte_carlo.hpp"
+#include "deriv-engine/adouble.hpp"
 #include <cmath>
 #include <random>
 #include <vector>
@@ -12,6 +13,24 @@ double payoff(double S, double K, OptionType type) {
         return std::max(S - K, 0.0);
     } else {
         return std::max(K - S, 0.0);
+    }
+}
+
+ADouble ad_payoff(const ADouble& S_T, double K, OptionType type) {
+    if (type == OptionType::Call) {
+        ADouble diff = S_T - K;
+        if (diff.value > 0.0) {
+            return diff;
+        } else {
+            return ADouble(0.0);
+        }
+    } else {
+        ADouble diff = ADouble(K) - S_T;
+        if (diff.value > 0.0) {
+            return diff;
+        } else {
+            return ADouble(0.0);
+        }
     }
 }
 
@@ -130,6 +149,63 @@ MonteCarloResult monte_carlo_price_control_variate(const EuropeanOption& option,
     double standard_error = discount * std::sqrt(sample_variance / num_paths);
 
     return MonteCarloResult{price, standard_error};
+}
+
+MonteCarloGreeksResult monte_carlo_greeks(const EuropeanOption& option, const MarketData& market,
+                                           int num_paths) {
+    const double K = option.strike;
+    const double T = option.time_to_expiry;
+    const double r = market.risk_free_rate;
+    const double q = market.dividend_yield;
+
+    std::mt19937 rng(std::random_device{}());
+    std::normal_distribution<double> normal(0.0, 1.0);
+
+    double price_sum = 0.0;
+    double delta_sum = 0.0;
+    double vega_sum = 0.0;
+    std::vector<double> undiscounted_payoffs(num_paths);
+
+    for (int i = 0; i < num_paths; ++i) {
+        get_tape().clear();
+
+        ADouble S(market.spot);
+        ADouble sigma(market.volatility);
+
+        double z = normal(rng);
+
+        ADouble half = ADouble(0.5) * sigma * sigma;
+        ADouble drift = (ADouble(r - q) - half) * T;
+        ADouble diffusion = sigma * std::sqrt(T) * z;
+        ADouble exponent = drift + diffusion;
+        ADouble S_T = S * ad_exp(exponent);
+
+        ADouble path_payoff = ad_payoff(S_T, K, option.type);
+
+        get_tape().backward(path_payoff.idx);
+        auto& adj = get_tape().adjoints;
+
+        undiscounted_payoffs[i] = path_payoff.value;
+        price_sum += path_payoff.value;
+        delta_sum += adj[S.idx];
+        vega_sum += adj[sigma.idx];
+    }
+
+    const double discount = std::exp(-r * T);
+    double mean_payoff = price_sum / num_paths;
+    double price = discount * mean_payoff;
+    double delta = discount * (delta_sum / num_paths);
+    double vega = discount * (vega_sum / num_paths);
+
+    double sq_diff_sum = 0.0;
+    for (double p : undiscounted_payoffs) {
+        double diff = p - mean_payoff;
+        sq_diff_sum += diff * diff;
+    }
+    double sample_variance = sq_diff_sum / (num_paths - 1);
+    double standard_error = discount * std::sqrt(sample_variance / num_paths);
+
+    return MonteCarloGreeksResult{price, delta, vega, standard_error};
 }
 
 }  // namespace derive
