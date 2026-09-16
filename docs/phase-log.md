@@ -38,14 +38,32 @@ build/test sequence on a fresh container on every push.
 ## Phase 1 — Black-Scholes closed-form (in progress)
 
 **What was built:**
-(fill in once complete)
+- `MarketData` struct (spot, risk-free rate, dividend yield, volatility)
+  and `EuropeanOption` struct (strike, time-to-expiry, call/put type)
+- `black_scholes_price()` — closed-form pricing for European calls and
+  puts, using the standard d1/d2 formulation
+- Internal `norm_cdf()` helper implementing the cumulative normal
+  distribution via `std::erfc`
 
 **Validated against:**
-(fill in — known textbook BS values, put-call parity, edge case tests)
+- Standard textbook reference case (S=100, K=100, T=1yr, r=5%, vol=20%):
+  call = 10.4506, put = 5.5735 — both matched within 0.1% tolerance
+- Still pending: put-call parity check, and the edge-case suite
+  (near-zero vol, deep ITM/OTM, near-expiry, zero/negative rates)
 
 **Defend this:**
-(fill in — should include: can derive the PDE and closed-form solution
-on a whiteboard without notes)
+Can explain the formula at both levels: the intuition (a call's price is
+the expected value of the asset in the exercise scenarios, minus the
+discounted strike weighted by probability of exercise) and the precise
+mechanics (N(d2) is the risk-neutral probability of finishing
+in-the-money; d1 differs from d2 by one sigma*sqrt(T) term because it
+weights the expected asset price rather than pure exercise probability,
+correcting for the log-normal distribution's mean being pulled above
+its median by volatility). Can also explain why higher volatility
+always increases option value regardless of call/put — capped downside,
+open-ended upside. Not yet done: Greeks derivation, and full whiteboard
+derivation of the BS PDE itself from the replicating-portfolio argument
+— that's the remaining gap before this phase is genuinely closed out.
 
 ---
 
