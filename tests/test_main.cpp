@@ -258,3 +258,17 @@ TEST_CASE("Antithetic variates reduce standard error", "[monte_carlo]") {
     // for a comparable number of total random draws
     REQUIRE(with_antithetic.standard_error < without_antithetic.standard_error);
 }
+
+TEST_CASE("Control variate reduces standard error vs plain Monte Carlo", "[monte_carlo][control_variate]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    deriv::MonteCarloResult plain = deriv::monte_carlo_price(option, market, 10000, false);
+    deriv::MonteCarloResult with_cv = deriv::monte_carlo_price_control_variate(option, market, 10000);
+
+    REQUIRE(with_cv.standard_error < plain.standard_error);
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    double diff = std::abs(with_cv.price - bs_price);
+    REQUIRE(diff < 3.0 * with_cv.standard_error);
+}
