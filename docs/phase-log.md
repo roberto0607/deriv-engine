@@ -46,6 +46,7 @@ build/test sequence on a fresh container on every push.
 - Internal `norm_cdf()` and `norm_pdf()` helpers
 - Guard against division-by-zero at T<=0 in both pricing and Greeks
   (see bug note below)
+- `year_fraction()` — day-count convention helper (ACT/365, ACT/360)
 
 **Validated against:**
 - Standard textbook reference case (S=100, K=100, T=1yr, r=5%, vol=20%):
@@ -58,6 +59,12 @@ build/test sequence on a fresh container on every push.
   original at-the-money reference case
 - Zero-time-to-expiry edge case for both pricing and Greeks — see bug
   note
+- Deep ITM call: price and delta converge to the forward-price/delta=1
+  limit; deep OTM call: price and delta converge to ~0
+- Negative interest rate: prices remain finite and positive, put-call
+  parity still holds
+- Day-count: ACT/365 vs ACT/360 produce correctly differing year
+  fractions for the same calendar days; 0 days gives exactly 0
 
 **Bug found and fixed:**
 At T=0 (or very close to it), the original d1/d2 formula divides by
@@ -67,6 +74,14 @@ adding an early-return guard: at T<=1e-8, price returns intrinsic value
 directly (max(S-K,0) for a call), and Greeks return the boundary values
 (delta = 0/1/-1 depending on moneyness, all other Greeks = 0) — this is
 the mathematically correct limit as T->0, not just a defensive hack.
+
+**Scope decision — discrete dividends deferred:**
+Project scope is crypto-focused (BTC options), where continuous
+dividend yield with q=0 is the mathematically correct assumption,
+since BTC pays no dividends. Discrete dividend handling (adjusting
+spot by the present value of scheduled cash payments) would only
+matter if scope expanded to equity options — deliberately deferred,
+not an oversight.
 
 **Defend this:**
 Can explain the formula at both levels: the intuition (a call's price
@@ -78,17 +93,18 @@ weights the expected asset price rather than pure exercise probability,
 correcting for the log-normal distribution's mean being pulled above
 its median by volatility). Can explain each Greek in plain terms:
 delta as price-sensitivity to the underlying, gamma as delta's own
-rate of change, vega as sensitivity to volatility specifically (not
-to be confused with theta), theta as time decay, rho as rate
+rate of change (and why it flattens to 0 for a deep-ITM option once
+delta saturates near 1), vega as sensitivity to volatility specifically
+(not to be confused with theta), theta as time decay, rho as rate
 sensitivity. Can derive the Black-Scholes PDE from the replicating-
 portfolio / delta-hedging argument via Ito's Lemma, and explain why
 the stock's drift term cancels out entirely (risk-neutral pricing).
 Can explain why higher volatility always increases option value
-regardless of call/put — capped downside, open-ended upside.
-Remaining gap: day-count conventions and discrete dividend handling
-not yet implemented; deep ITM/OTM and negative-rate cases not yet
-explicitly tested, though the T=0 fix suggests the formula is
-otherwise sound.
+regardless of call/put — capped downside, open-ended upside. Can
+explain why day-count convention choice changes priced output and why
+ACT/360 produces a larger year-fraction than ACT/365 for the same
+calendar days. Phase considered closed: all identified gaps are either
+resolved and tested, or explicitly and defensibly scoped out.
 
 ---
 

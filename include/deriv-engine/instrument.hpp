@@ -13,4 +13,10 @@ struct EuropeanOption {
     OptionType type;
 };
 
+struct AmericanOption {
+    double strike;
+    double time_to_expiry;
+    OptionType type;
+};
+
 }  // namespace deriv

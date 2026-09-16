@@ -5,6 +5,7 @@
 #include "deriv-engine/greeks.hpp"
 #include <cmath>
 #include "deriv-engine/day_count.hpp"
+#include "deriv-engine/tree_pricer.hpp"
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -182,4 +183,40 @@ TEST_CASE("Day count conventions compute correct year fractions", "[day_count]")
 
     // 0 days (option expires today) should give exactly 0
     REQUIRE(deriv::year_fraction(0, deriv::DayCountConvention::Act365) == Catch::Approx(0.0));
+}
+
+TEST_CASE("Binomial tree converges to Black-Scholes for European call", "[tree][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    double tree_price_low_steps = deriv::binomial_tree_price(option, market, 10);
+    double tree_price_high_steps = deriv::binomial_tree_price(option, market, 500);
+
+    // With few steps, the tree is a rough approximation — allow more slack
+    REQUIRE(tree_price_low_steps == Catch::Approx(bs_price).epsilon(0.02));
+
+    // With many steps, it should converge very close to the closed-form price
+    REQUIRE(tree_price_high_steps == Catch::Approx(bs_price).epsilon(0.001));
+}
+
+TEST_CASE("Binomial tree converges to Black-Scholes for European put", "[tree][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Put};
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    double tree_price = deriv::binomial_tree_price(option, market, 500);
+
+    REQUIRE(tree_price == Catch::Approx(bs_price).epsilon(0.001));
+}
+
+TEST_CASE("American option is worth at least as much as European", "[tree]") {
+    deriv::MarketData market{100.0, 0.05, 0.03, 0.2};  // nonzero dividend yield matters here
+    deriv::EuropeanOption euro_put{100.0, 1.0, deriv::OptionType::Put};
+    deriv::AmericanOption amer_put{100.0, 1.0, deriv::OptionType::Put};
+
+    double euro_price = deriv::binomial_tree_price(euro_put, market, 500);
+    double amer_price = deriv::binomial_tree_price(amer_put, market, 500);
+
+    REQUIRE(amer_price >= euro_price);
 }
