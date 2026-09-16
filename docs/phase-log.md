@@ -201,16 +201,79 @@ result, not just a qualitative claim.
 
 ---
 
-## Phase 4 — AAD Greeks
+## Phase 4 — AAD Greeks (done)
 
 **What was built:**
-
+- `Tape` — a flat reverse-mode computation-graph recorder (`push_leaf`,
+  `push_unary`, `push_binary`, `backward`), one tape per thread via
+  `thread_local get_tape()`
+- `ADouble` — a number type wrapping a `double` value and a tape index,
+  with operator overloads (+, -, *, /, unary -) and named functions
+  (`ad_exp`, `ad_log`, `ad_sqrt`) that transparently record every
+  operation onto the tape
+- `monte_carlo_greeks()` — runs the GBM simulation using `ADouble` for
+  S, sigma, r, and T, with discounting folded directly into the tape,
+  producing price + delta + vega + theta + rho from a single
+  simulation pass
+- Optional `seed` parameter added to `monte_carlo_price()`, enabling
+  reproducible randomness for finite-difference comparisons
 
 **Validated against:**
+- Tape mechanics verified against a hand-computed toy example
+  (y = a·b + c) before any real pricing code touched it
+- Delta and vega from AAD matched analytical Black-Scholes Greeks on
+  the standard reference case
+- Theta and rho, added in a second pass with discounting folded onto
+  the tape, also matched analytical Greeks
+- AAD vs. bump-and-revalue benchmarked directly: 4 Greeks, 100,000
+  paths — bump-and-revalue 94.3ms, AAD 150.5ms. AAD was slower at this
+  scale, not faster — a real, documented finding, not a discarded
+  result (see numerics.md for the full reasoning on why, and where the
+  crossover point would actually be)
 
+**Bug found and fixed:**
+The first version of the AAD-vs-bump-and-revalue benchmark showed the
+two methods' delta disagreeing by 3.2 — far too large to be sampling
+noise. Root cause: `monte_carlo_price` used a fresh unseeded RNG per
+call, so bump-and-revalue's "base" and "bumped" runs used unrelated
+random paths instead of shared randomness with one input nudged,
+defeating the entire premise of a finite-difference comparison. Fixed
+by adding an optional `seed` parameter (default preserves existing
+behavior). Post-fix, bump-delta and AAD-delta agree closely (0.6363
+vs. 0.6376).
+
+**Scope decision — gamma deferred:**
+Gamma requires second-order differentiation (a tape-of-tapes
+structure to differentiate the backward pass itself), a genuinely
+larger sub-project than first-order AAD. Given remaining phases
+(Longstaff-Schwartz, PDE, hedging simulation, calibration) cover new
+technical ground, gamma-via-AAD was judged lower-value than that
+remaining breadth. Gamma is still available via the exact analytical
+formula from Phase 1 wherever needed downstream (e.g. the hedging
+simulation).
 
 **Defend this:**
-
+Can explain reverse-mode AAD mechanically: why walking the tape from
+last-recorded node to first guarantees each node's adjoint is fully
+accumulated before being propagated further back, and why this
+correctly implements the chain rule across a graph where a value (like
+S) has multiple children. Can explain why reverse mode was chosen over
+forward mode: one backward pass yields derivatives w.r.t. every input,
+where forward mode would need one full pass per input. Can explain
+"pathwise differentiation" as the named technique AAD implements here
+— differentiating while holding the random draw Z fixed per path. Can
+explain the payoff kink handling (branching on the plain value, valid
+since the kink has zero probability of being hit exactly). Can explain
+why folding discounting onto the tape was necessary for rho
+specifically, since r affects price through two channels that the
+chain rule needs to combine automatically. Can state and defend the
+counterintuitive benchmark result — AAD was slower at this scale — and
+explain precisely why: fixed per-path tape overhead vs.
+bump-and-revalue's cost scaling with Greek count, and where the
+crossover would actually occur. Can explain the seed-sharing bug and
+why finite-difference comparisons require shared randomness between
+base and bumped runs. Can explain, without hedging, why gamma was
+deliberately not attempted via AAD in this phase.
 
 ---
 
