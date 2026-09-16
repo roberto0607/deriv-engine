@@ -24,6 +24,27 @@ Greeks black_scholes_greeks(const EuropeanOption& option, const MarketData& mark
     const double q = market.dividend_yield;
     const double sigma = market.volatility;
 
+    // At or past expiry, there's no more time-sensitivity left: gamma,
+    // vega, theta, and rho all collapse to 0. Delta becomes a hard 0/1
+    // (or 0/-1 for a put) depending on whether the option finished
+    // in-the-money. The formula below would divide by zero
+    // (sigma * sqrt(T)) if T <= 0, so this case is handled separately.
+    if (T <= 1e-8) {
+        Greeks g{};
+        const bool call_itm = (option.type == OptionType::Call) && (S > K);
+        const bool put_itm  = (option.type == OptionType::Put)  && (S < K);
+
+        if (call_itm) {
+            g.delta = 1.0;
+        } else if (put_itm) {
+            g.delta = -1.0;
+        } else {
+            g.delta = 0.0;
+        }
+        // gamma, vega, theta, rho already zero-initialized by Greeks g{};
+        return g;
+    }
+
     const double sqrtT = std::sqrt(T);
     const double d1 = (std::log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * sqrtT);
     const double d2 = d1 - sigma * sqrtT;
