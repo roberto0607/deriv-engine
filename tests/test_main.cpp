@@ -429,3 +429,41 @@ TEST_CASE("Delta hedge PnL distribution is centered near zero with reasonable sp
     double theoretical_price = deriv::black_scholes_price(option, market);
     REQUIRE(std::abs(mean) < 0.15 * theoretical_price);
 }
+
+TEST_CASE("More frequent rebalancing reduces hedging error", "[.manual][hedging]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    auto run_experiment = [&](int num_rebalances) {
+        const int num_sims = 2000;
+        std::vector<double> pnls;
+        pnls.reserve(num_sims);
+        for (int i = 0; i < num_sims; ++i) {
+            deriv::HedgeSimResult result = deriv::simulate_delta_hedge(option, market, num_rebalances, 0);
+            pnls.push_back(result.final_pnl);
+        }
+        double mean = 0.0;
+        for (double p : pnls) mean += p;
+        mean /= pnls.size();
+        double sq_diff_sum = 0.0;
+        for (double p : pnls) {
+            double diff = p - mean;
+            sq_diff_sum += diff * diff;
+        }
+        return std::sqrt(sq_diff_sum / (pnls.size() - 1));
+    };
+
+    double stdev_monthly = run_experiment(12);
+    double stdev_weekly = run_experiment(52);
+    double stdev_daily = run_experiment(252);
+
+    WARN("Hedging error stdev — monthly (12 rebalances): " << stdev_monthly);
+    WARN("Hedging error stdev — weekly (52 rebalances): " << stdev_weekly);
+    WARN("Hedging error stdev — daily (252 rebalances): " << stdev_daily);
+
+    // More frequent rebalancing should shrink the hedging error —
+    // this is the direct, quantified link back to Black-Scholes's
+    // continuous-hedging assumption from Phase 1.
+    REQUIRE(stdev_weekly < stdev_monthly);
+    REQUIRE(stdev_daily < stdev_weekly);
+}
