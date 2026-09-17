@@ -12,6 +12,7 @@
 #include "deriv-engine/hedging.hpp"
 #include "deriv-engine/longstaff_schwartz.hpp"
 #include "deriv-engine/pde_solver.hpp"
+#include "deriv-engine/implied_vol.hpp"
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -571,4 +572,16 @@ TEST_CASE("Explicit scheme diverges with too-large time step, Crank-Nicolson sta
     // The explicit scheme should be wildly wrong (or even nan/inf) in
     // this regime; Crank-Nicolson should still be close to correct.
     REQUIRE(std::abs(cn_price - bs_price) < 1.0);
+}
+
+TEST_CASE("Implied vol solver recovers known volatility from its own price", "[implied_vol]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};  // true vol = 20%
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    double known_price = deriv::black_scholes_price(option, market);
+
+    deriv::ImpliedVolResult result = deriv::implied_volatility(option, market, known_price);
+
+    REQUIRE(result.converged);
+    REQUIRE(result.vol == Catch::Approx(0.2).epsilon(0.0001));
 }
