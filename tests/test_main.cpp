@@ -10,6 +10,7 @@
 #include "deriv-engine/adouble.hpp"
 #include <chrono>
 #include "deriv-engine/hedging.hpp"
+#include "deriv-engine/longstaff_schwartz.hpp"
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -466,4 +467,19 @@ TEST_CASE("More frequent rebalancing reduces hedging error", "[.manual][hedging]
     // continuous-hedging assumption from Phase 1.
     REQUIRE(stdev_weekly < stdev_monthly);
     REQUIRE(stdev_daily < stdev_weekly);
+}
+
+TEST_CASE("Quadratic regression exactly recovers known coefficients with zero noise", "[lsm][regression]") {
+    // Generate points that lie EXACTLY on y = 2 + 3x + 0.5x^2
+    std::vector<double> X = {-2.0, -1.0, 0.0, 1.0, 2.0, 3.0};
+    std::vector<double> Y;
+    for (double x : X) {
+        Y.push_back(2.0 + 3.0 * x + 0.5 * x * x);
+    }
+
+    auto coeffs = deriv::fit_quadratic(X, Y);
+
+    REQUIRE(coeffs[0] == Catch::Approx(2.0).epsilon(0.0001));
+    REQUIRE(coeffs[1] == Catch::Approx(3.0).epsilon(0.0001));
+    REQUIRE(coeffs[2] == Catch::Approx(0.5).epsilon(0.0001));
 }
