@@ -528,3 +528,23 @@ TEST_CASE("Tridiagonal solver matches a hand-verified known solution", "[pde]") 
     REQUIRE(x[1] == Catch::Approx(1.0));
     REQUIRE(x[2] == Catch::Approx(1.0));
 }
+
+TEST_CASE("Crank-Nicolson converges to Black-Scholes for European call", "[pde][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    double pde_price = deriv::crank_nicolson_price(option, market, 200, 200);
+
+    REQUIRE(pde_price == Catch::Approx(bs_price).epsilon(0.01));
+}
+
+TEST_CASE("Crank-Nicolson converges to Black-Scholes for European put", "[pde][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Put};
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    double pde_price = deriv::crank_nicolson_price(option, market, 200, 200);
+
+    REQUIRE(pde_price == Catch::Approx(bs_price).epsilon(0.01));
+}
