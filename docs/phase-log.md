@@ -374,16 +374,47 @@ meaningfully different case was added.
 
 ---
 
-## Phase 7 — Finite difference PDE (Crank-Nicolson)
+## Phase 7 — Finite difference PDE (Crank-Nicolson) (done)
 
 **What was built:**
-
+- `solve_tridiagonal()` — Thomas algorithm (forward elimination +
+  back-substitution) for solving tridiagonal linear systems in O(n)
+- `crank_nicolson_price()` — full PDE grid solver: known expiry
+  payoff and boundary conditions seed the grid, walked backward in
+  time via the Crank-Nicolson stencil, each time step solved as a
+  tridiagonal system
+- `explicit_fd_price()` — a deliberately simple fully-explicit scheme,
+  built specifically to demonstrate conditional stability by contrast,
+  not for production pricing use
 
 **Validated against:**
-
+- Tridiagonal solver verified independently first, against a
+  hand-solvable known system, before being trusted inside the full
+  PDE solver
+- Crank-Nicolson price matches Black-Scholes for both European calls
+  and puts
+- Stability demonstrated directly: on an identical grid (fine price
+  steps, coarse time steps — the specific combination that breaks
+  explicit stability), the explicit scheme diverged to -4.06×10^22
+  while Crank-Nicolson remained accurate at 10.4548 against a true
+  price of 10.4506
 
 **Defend this:**
-
+Can explain the grid setup and why it walks backward from expiry,
+structurally mirroring the tree and LSM despite being a fundamentally
+different numerical method (PDE discretization vs. tree branching vs.
+simulated regression). Can explain why Crank-Nicolson averages
+explicit and implicit formulations, and precisely what that trades
+off: unconditional stability plus second-order time accuracy, versus
+explicit's simplicity-but-conditional-stability and implicit's
+stability-but-lower-accuracy. Can explain why solving each time step
+reduces to a tridiagonal system, and why the Thomas algorithm (O(n))
+is used instead of general Gaussian elimination (O(n^3)) for it. Can
+walk through the concrete stability demonstration and explain
+precisely why that specific combination of fine price steps and
+coarse time steps is what breaks the explicit scheme's stability
+condition, rather than treating "unconditionally stable" as a fact to
+recite without a mechanism.
 
 ---
 

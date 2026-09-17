@@ -297,3 +297,64 @@ simulated data.
 - A second, meaningfully different case (in-the-money call, different
   dividend yield, volatility, and time-to-expiry) also converges —
   confirming the first result wasn't specific to one parameter set
+
+  ## Finite Difference (Crank-Nicolson)
+
+**The core idea:**
+Solve the Black-Scholes PDE numerically on a 2D grid of (price, time)
+points, rather than symbolically (closed-form) or by random sampling
+(Monte Carlo). Known values at expiry (the payoff) and at extreme
+price boundaries seed the grid; the algorithm walks backward in time,
+solving for each earlier column from the columns already known —
+structurally the same backward-walking pattern as the tree and LSM,
+applied to a PDE discretization instead.
+
+**Why Crank-Nicolson over explicit or implicit:**
+Explicit schemes are simple (each new value depends only on
+already-known values, no system to solve) but only conditionally
+stable — the time step must be small relative to the square of the
+price-grid spacing, or the scheme diverges. Implicit schemes are
+unconditionally stable but only first-order accurate in time.
+Crank-Nicolson averages the explicit and implicit formulations,
+achieving both unconditional stability and second-order accuracy.
+
+**Stability demonstrated directly, not just asserted:**
+Ran both an explicit scheme and Crank-Nicolson on the identical grid
+(200 price steps, 20 time steps — deliberately coarse in time relative
+to the fine price grid, the specific combination that breaks explicit
+stability). Explicit scheme result: -4.06×10^22 (a nonsensical,
+diverged value for an option price). Crank-Nicolson result: 10.4548,
+against a true Black-Scholes price of 10.4506 — still essentially
+correct on the same grid where the explicit scheme collapsed entirely.
+
+**Solving each time step — tridiagonal system via Thomas algorithm:**
+Discretizing the PDE's derivative terms (∂V/∂S, ∂²V/∂S², via central
+differences) and averaging explicit/implicit versions produces, per
+time step, a linear system where each unknown only depends on its two
+immediate neighbors — a tridiagonal system. Solved via the Thomas
+algorithm (forward elimination + back-substitution), which is O(n)
+rather than the O(n³) general Gaussian elimination would cost —
+significant given this runs once per time step across the whole grid.
+
+**Regression solver — err, tridiagonal solver — verified independently
+first:**
+Same discipline as the LSM regression solver (Phase 6): before
+trusting the Thomas algorithm inside the full PDE solver, verified it
+against a small, hand-solvable tridiagonal system with a known exact
+answer, isolating correctness of the linear algebra from correctness
+of the PDE discretization.
+
+**Boundary conditions:**
+At S=0 and S=S_max (chosen as 3x the strike, far enough that the known
+asymptotic behavior is essentially exact), the value is set directly
+from known limiting behavior rather than the interior stencil, which
+needs neighbors on both sides that don't exist at the grid's edges.
+
+**Validated against:**
+- Tridiagonal solver alone: exact match against a hand-solvable known
+  system
+- Full Crank-Nicolson price matches Black-Scholes closed-form for both
+  European calls and puts
+- Stability: explicit scheme diverges catastrophically on a grid where
+  Crank-Nicolson remains accurate — the concrete proof behind the
+  "unconditionally stable" claim, not just an assertion
