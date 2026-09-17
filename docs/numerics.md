@@ -235,3 +235,65 @@ discrete rebalancing. This is the same PDE-derivation argument from
 Phase 1 made empirically concrete: the tighter the rebalancing
 interval, the closer the realized outcome tracks the theoretical
 price, exactly as the continuous-hedging assumption predicts.
+
+## Longstaff-Schwartz (American Monte Carlo)
+
+**The problem this solves:**
+European Monte Carlo only needs the terminal price. American options
+require, at every point along every path, deciding "exercise now, or
+keep holding?" — which needs an estimate of the expected value of
+continuing to hold. That estimate seems to require knowing the future,
+which appears circular mid-simulation.
+
+**The resolution — regression on already-simulated paths:**
+Simulate every path forward to expiry FIRST (so the future is already
+known for every path), then walk backward through time. At each step,
+fit a regression curve — continuation value as a function of current
+price — using the discounted realized future cash flow of each
+simulated path as training data. Compare that regression-estimated
+continuation value against the immediate exercise value at each node,
+and take whichever is larger, exactly the same decision rule as the
+binomial tree (Phase 2), just estimated statistically instead of
+computed exactly at a discrete node.
+
+**Why regression only over in-the-money paths:**
+Paths where exercise isn't a candidate (out-of-the-money) contribute
+no useful information to the exercise/continue decision, and including
+them dilutes the regression fit specifically in the price region where
+the decision actually matters. This is a deliberate detail from the
+original Longstaff-Schwartz (2001) formulation, not an arbitrary
+simplification.
+
+**Why quadratic (not linear or higher-order) basis functions:**
+A quadratic captures curvature in the continuation-value relationship
+(visible in the earlier diagram: continuation value isn't linear in
+spot) with a small, cheap-to-fit 3-coefficient regression. Higher-order
+polynomials risk overfitting with the amount of data available at each
+time step, especially near the tails where fewer paths are in the
+money.
+
+**Why full path-stepping is required here (unlike European MC):**
+European pricing only needs the terminal distribution (Phase 3), which
+can be sampled directly in one draw. American exercise requires the
+price at every intermediate exercise date, since the decision happens
+at each of those dates — this is exactly the case flagged as deferred
+in Phase 3's numerics notes.
+
+**Regression solver:**
+A hand-implemented least-squares quadratic fit via the normal
+equations, solved with Gaussian elimination and partial pivoting
+(row-swapping to avoid dividing by a near-zero pivot, a standard
+numerical-stability safeguard). Verified independently, before use in
+the full algorithm, by confirming it exactly recovers known
+coefficients from zero-noise synthetic data — isolating correctness
+of the linear algebra from any question about how well it fits noisy
+simulated data.
+
+**Validated against:**
+- Regression solver alone: exact recovery of known coefficients from
+  noise-free synthetic data
+- Full LSM price converges to the (already-trusted) binomial tree
+  price for an American put with a nonzero dividend yield
+- A second, meaningfully different case (in-the-money call, different
+  dividend yield, volatility, and time-to-expiry) also converges —
+  confirming the first result wasn't specific to one parameter set

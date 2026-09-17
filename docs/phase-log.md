@@ -331,16 +331,46 @@ just a single path) was needed to distinguish "systematic bug" from
 
 ---
 
-## Phase 6 — Longstaff-Schwartz American MC
+## Phase 6 — Longstaff-Schwartz American Monte Carlo (done)
 
 **What was built:**
-
+- `fit_quadratic()` — hand-implemented least-squares quadratic
+  regression via normal equations and Gaussian elimination with
+  partial pivoting
+- `longstaff_schwartz_price()` — full path simulation (storing
+  complete price history per path, not just terminal values), followed
+  by a backward walk that regresses continuation value against current
+  price for in-the-money paths at each step, comparing against
+  immediate exercise value and updating each path's realized cash flow
+  and exercise time accordingly
 
 **Validated against:**
-
+- Regression solver verified independently first: exact recovery of
+  known quadratic coefficients from zero-noise data, before trusting it
+  inside the full algorithm
+- LSM price converges to the binomial tree's American price for a put
+  with a nonzero dividend yield
+- A second, deliberately different case (in-the-money call, different
+  dividend yield/vol/expiry) also converges, confirming the result
+  generalizes rather than being a coincidence of one parameter set
 
 **Defend this:**
-
+Can explain the core resolution to the apparent circularity of
+American Monte Carlo: simulate all paths to expiry first, so the
+"future" needed for the continuation-value estimate is already known
+data, then walk backward using regression to estimate continuation
+value from that data. Can explain why only in-the-money paths are
+used in the regression, and why quadratic (not linear or higher-order)
+basis functions were chosen. Can explain why this phase specifically
+required full path-stepping, unlike European Monte Carlo, connecting
+back to the explicit deferral noted in Phase 3. Can explain why the
+regression solver was verified independently (on synthetic,
+zero-noise data) before being trusted inside the much more complex
+full algorithm — isolating linear-algebra correctness from Monte
+Carlo/pricing correctness as two separate claims, not one conflated
+test. Can explain why validating against a single parameter set isn't
+sufficient evidence the algorithm is correct, and why a second,
+meaningfully different case was added.
 
 ---
 
