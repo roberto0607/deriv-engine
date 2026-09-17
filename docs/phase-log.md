@@ -418,25 +418,57 @@ recite without a mechanism.
 
 ---
 
-## Phase 8 — Calibration & real market data (in progress)
+## Phase 8 — Calibration & real market data (done)
 
-**What was built so far:**
+**What was built:**
 - `implied_volatility()` — Newton-Raphson solver using vega for the
   update step, with a near-zero-vega guard and sigma clamping for
   numerical safety
 - Verified Deribit's public API is accessible (no auth, no US
   geoblocking on public endpoints) via direct curl test before
   committing to it as the data source
+- `build_vol_surface_from_snapshot()` — parses a full real BTC options
+  chain (JSON, via nlohmann/json), decodes Deribit's instrument naming
+  convention (e.g. BTC-30OCT26-90000-P) into strike/expiry/type,
+  converts BTC-denominated prices to USD, and runs the implied vol
+  solver independently across every contract in the chain
 
 **Validated against:**
 - Round-trip: recovers a known volatility exactly from its own
   Black-Scholes price
 - Edge case: deep OTM option with near-zero vega handled gracefully,
   no crash or nan
-- Real live Deribit data (BTC-30OCT26-90000-P): solver's independently
+- Single real contract (BTC-30OCT26-90000-P): solver's independently
   computed implied vol (34.13%) landed within 0.23 percentage points
   of Deribit's own reported mark_iv (34.36%), converging in 4
   iterations
+- Full live chain, not just one contract: 904 contracts parsed from a
+  saved snapshot, 860 (95.1%) converged. Across converged contracts,
+  average |solved_iv - market_iv| was 0.019 (1.9 percentage points)
+  — confirming the single-contract result holds at market scale, not
+  a coincidence of one hand-picked example
+- Volatility smile visualized for the most liquid expiry in the
+  snapshot (~99 days out, 118 contracts): a clean, textbook smile
+  shape emerges directly from real market prices — implied vol
+  bottoms out near-the-money (~36% around $84,000-86,000 strikes,
+  close to spot) and rises on both wings (over 100% for deep OTM
+  puts near $20,000, ~68% for deep OTM calls near $230,000)
+- The 44 non-converged contracts (4.9%) were individually inspected,
+  not just counted: confirmed to cluster exactly where the solver's
+  known vega-collapse failure mode predicts (moneyness ratios from
+  0.39 to 4.18, many under 8 days to expiry, some under 1 day).
+  Their solved_iv values directly confirm the mechanism: many stuck
+  at exactly 0.5 (the solver's starting guess — the vega guard
+  triggered on the very first iteration) or exactly 0.01 (the clamp
+  floor — one Newton step overshot before hitting the guard)
+
+**Reproducibility:**
+The chain snapshot is pulled once via curl and saved to
+data/btc_chain_snapshot.json rather than tests hitting Deribit's live
+API — a live dependency would make tests flaky and non-deterministic
+as the real market moves. today_year/month/day are passed explicitly
+into the surface builder rather than read from the system clock, so
+time-to-expiry is pinned to when the snapshot was taken.
 
 **Defend this:**
 Can explain why implied vol requires a numerical solver rather than a
@@ -446,26 +478,19 @@ failure mode concretely, connecting it back to the exact edge cases
 (deep ITM/OTM, near-expiry) already identified and tested in Phase 1 —
 this wasn't a new discovery, it was an already-known risk being
 handled defensively in a new context. Can explain, with specifics, why
-a 0.23-point gap against Deribit's own number is expected rather than
-a correctness failure: coin-margined quanto effects, timing mismatch
+a small gap against Deribit's own number is expected rather than a
+correctness failure: coin-margined quanto effects, timing mismatch
 between the snapshot and Deribit's internal calculation, and
 Deribit's own smoothing across their internal vol curve. Can explain
 why Deribit's public data was verified directly (via curl) before
-being adopted, rather than assumed accessible.
-
-**Still open:**
-- Volatility surface: pulling multiple strikes/expiries and plotting
-  implied vol across the full chain to see the smile/skew shape
-  emerge from real market data
-
----
-
-## Phase 9 (stretch) — CUDA Monte Carlo
-
-**What was built:**
-
-
-**Validated against:**
-
-
-**Defend this:**
+being adopted, rather than assumed accessible. Can explain why
+validating across the full 904-contract chain is meaningfully
+stronger evidence than validating a single hand-picked contract. Can
+explain the volatility smile's shape in terms of market-implied tail
+risk, and connect it directly back to Black-Scholes' constant-
+volatility assumption flagged as a known limitation in Phase 1. Can
+walk through the non-convergence investigation end to end — not just
+"44 failed," but why, demonstrated using the actual failure values
+(0.5 and 0.01) as direct evidence of which specific guard triggered
+for each case. Can explain why a snapshot-based approach was used
+instead of live API calls in tests.

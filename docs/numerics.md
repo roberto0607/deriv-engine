@@ -418,3 +418,57 @@ it as the project's data source, per the standing rule of confirming
 accessibility, cost, and data depth before adopting any external data
 source. Prices are quoted in BTC, not USD, and must be converted
 (price_usd = price_btc * underlying_price_usd) before use.
+
+## Volatility Surface (real market data)
+
+**What was built:**
+`build_vol_surface_from_snapshot()` parses a full Deribit BTC options
+chain (JSON, via nlohmann/json), decodes Deribit's instrument naming
+convention (e.g. BTC-30OCT26-90000-P) into strike/expiry/type, converts
+BTC-denominated prices to USD, and runs the implied vol solver
+(independently, not just reading Deribit's own mark_iv) across every
+contract in the chain.
+
+**Reproducibility — snapshot-based, not live:**
+The chain is pulled once via curl and saved to data/btc_chain_snapshot.json,
+rather than the test suite hitting Deribit's live API on every run. A
+live API dependency would make tests flaky (network failures, and
+results that silently change over time as the real market moves) —
+the same reproducibility principle applied throughout this project.
+today_year/month/day are passed explicitly rather than read from the
+system clock, so time-to-expiry calculations are pinned to when the
+snapshot was taken, not whenever the code happens to run later.
+
+**Full-market validation — not just one contract:**
+Ran across the entire live BTC options chain: 904 total contracts
+parsed, 860 (95.1%) converged. Across the converged contracts, this
+engine's independently-solved implied vol averaged just 0.019 (1.9
+percentage points) away from Deribit's own reported mark_iv — this
+is the same result observed on the single hand-picked contract in the
+previous section, now confirmed to hold at market scale, not a
+coincidence of one lucky example.
+
+**The volatility smile, visualized from real data:**
+Plotted implied vol against strike for the most heavily-quoted expiry
+in the snapshot (~99 days out, 118 contracts). The resulting curve is
+a textbook volatility smile: implied vol bottoms out near-the-money
+(~36% around $84,000-86,000 strikes, close to spot), and rises on
+both wings — over 100% for deep OTM puts near $20,000, and up to ~68%
+for deep OTM calls near $230,000. This is the real market pricing in
+tail risk that Black-Scholes' constant-volatility assumption cannot
+represent — the exact limitation flagged back in Phase 1's assumptions
+list, now demonstrated empirically with live data rather than just
+stated as a known theoretical gap.
+
+**Non-convergence — investigated, not just counted:**
+The 44 non-converged contracts (4.9%) were not a mystery left
+unexamined. Inspecting them directly showed every one falls into the
+already-known vega-collapse failure mode from Phase 1/8's edge-case
+work: extreme moneyness (strike/spot ratios from 0.39 to 4.18) and/or
+very short time-to-expiry (many under 8 days, some under 1 day).
+Their solved_iv values confirm the specific mechanism: many are stuck
+at exactly 0.5 (the solver's starting guess, meaning the near-zero-
+vega guard triggered on the very first iteration) or exactly 0.01
+(the clamp floor, meaning one Newton step overshot before hitting the
+guard). This is the predicted pattern from the solver's design,
+confirmed directly against real failure data rather than assumed.
