@@ -358,3 +358,63 @@ needs neighbors on both sides that don't exist at the grid's edges.
 - Stability: explicit scheme diverges catastrophically on a grid where
   Crank-Nicolson remains accurate — the concrete proof behind the
   "unconditionally stable" claim, not just an assertion
+
+## Implied Volatility & Real-Market Calibration
+
+**The problem being solved:**
+Every pricing method so far takes volatility as an INPUT. Real markets
+quote option PRICES, not volatilities — volatility has to be backed
+out from the price the market is actually willing to pay. This is the
+inverse problem: given (S, K, T, r, market_price), find the σ that
+makes black_scholes_price reproduce that price.
+
+**Why Newton-Raphson, and why it needs vega:**
+Black-Scholes has no closed-form inverse with respect to σ, so the
+implied vol has to be found numerically. Newton-Raphson iteratively
+refines a guess using the local slope of price with respect to σ —
+which is exactly vega, already built and validated in Phase 1. Each
+iteration: price the option at the current vol guess, measure how far
+off the price is, and use vega to compute a smarter next guess. This
+converges very fast when it works — the real-data test below
+converged in 4 iterations.
+
+**Handling near-zero vega (a real edge case, not hypothetical):**
+Deep ITM/OTM options and options very close to expiry have vega near
+zero (this was already discovered and tested explicitly in Phase 1's
+edge case suite). Dividing by a near-zero vega in the Newton-Raphson
+update would either blow up or produce a meaningless jump. The solver
+detects this and returns cleanly with converged=false rather than
+crashing or returning garbage — not every real market quote has a
+well-defined, numerically stable implied vol, and the solver is
+honest about that rather than forcing an answer.
+
+**Validated against:**
+- Round-trip test: given a known (price, vol) pair from Black-Scholes
+  itself, the solver recovers the exact vol that produced that price
+- Edge case: a deep OTM option with a tiny price does not crash or
+  produce nan/inf, even when convergence isn't guaranteed
+- REAL DATA: pulled a live BTC put (BTC-30OCT26-90000-P) from
+  Deribit's public API (spot=$76,871.89, strike=$90,000, mark
+  price=0.176 BTC = $13,529.50, ~43 days to expiry). The solver
+  independently computed 34.13% implied vol; Deribit's own reported
+  mark_iv was 34.36% — a gap of 0.23 percentage points, converging in
+  4 iterations.
+
+**Why the small gap to Deribit's own mark_iv is expected, not a bug:**
+- BTC options are typically coin-margined (settled and margined in
+  BTC, not USD) — Deribit's own pricing may include a quanto-style
+  adjustment that vanilla Black-Scholes does not model
+- The curl snapshot and Deribit's mark_iv were computed at slightly
+  different instants; BTC's price (and therefore implied vol) moves
+  continuously
+- Deribit's mark_iv is itself likely smoothed/fitted across their own
+  internal vol curve, not simply solved from that single mark price
+  the same way this solver does it
+
+**Data source:**
+Deribit's public REST API (no authentication required), verified
+directly (via curl) to be accessible from the US before committing to
+it as the project's data source, per the standing rule of confirming
+accessibility, cost, and data depth before adopting any external data
+source. Prices are quoted in BTC, not USD, and must be converted
+(price_usd = price_btc * underlying_price_usd) before use.

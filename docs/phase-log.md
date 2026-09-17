@@ -418,16 +418,45 @@ recite without a mechanism.
 
 ---
 
-## Phase 8 — Calibration & real market data
+## Phase 8 — Calibration & real market data (in progress)
 
-**What was built:**
-
+**What was built so far:**
+- `implied_volatility()` — Newton-Raphson solver using vega for the
+  update step, with a near-zero-vega guard and sigma clamping for
+  numerical safety
+- Verified Deribit's public API is accessible (no auth, no US
+  geoblocking on public endpoints) via direct curl test before
+  committing to it as the data source
 
 **Validated against:**
-
+- Round-trip: recovers a known volatility exactly from its own
+  Black-Scholes price
+- Edge case: deep OTM option with near-zero vega handled gracefully,
+  no crash or nan
+- Real live Deribit data (BTC-30OCT26-90000-P): solver's independently
+  computed implied vol (34.13%) landed within 0.23 percentage points
+  of Deribit's own reported mark_iv (34.36%), converging in 4
+  iterations
 
 **Defend this:**
+Can explain why implied vol requires a numerical solver rather than a
+closed-form formula, and specifically why vega is the right quantity
+to drive Newton-Raphson's update step. Can explain the near-zero-vega
+failure mode concretely, connecting it back to the exact edge cases
+(deep ITM/OTM, near-expiry) already identified and tested in Phase 1 —
+this wasn't a new discovery, it was an already-known risk being
+handled defensively in a new context. Can explain, with specifics, why
+a 0.23-point gap against Deribit's own number is expected rather than
+a correctness failure: coin-margined quanto effects, timing mismatch
+between the snapshot and Deribit's internal calculation, and
+Deribit's own smoothing across their internal vol curve. Can explain
+why Deribit's public data was verified directly (via curl) before
+being adopted, rather than assumed accessible.
 
+**Still open:**
+- Volatility surface: pulling multiple strikes/expiries and plotting
+  implied vol across the full chain to see the smile/skew shape
+  emerge from real market data
 
 ---
 
