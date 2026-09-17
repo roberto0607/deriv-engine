@@ -11,6 +11,7 @@
 #include <chrono>
 #include "deriv-engine/hedging.hpp"
 #include "deriv-engine/longstaff_schwartz.hpp"
+#include "deriv-engine/pde_solver.hpp"
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -508,4 +509,22 @@ TEST_CASE("Longstaff-Schwartz converges to tree price for American call with div
 
     double diff = std::abs(lsm.price - tree_price);
     REQUIRE(diff < 3.0 * lsm.standard_error);
+}
+
+TEST_CASE("Tridiagonal solver matches a hand-verified known solution", "[pde]") {
+    // System:  2x0 -  x1        = 1
+    //          -x0 + 2x1 -  x2  = 0
+    //               -x1 + 2x2  = 1
+    // Hand-solvable: this is a standard small tridiagonal test case,
+    // with known exact solution x = [1, 1, 1].
+    std::vector<double> lower = {0, -1, -1};   // lower[0] unused
+    std::vector<double> diag  = {2, 2, 2};
+    std::vector<double> upper = {-1, -1, 0};   // upper[2] unused
+    std::vector<double> d     = {1, 0, 1};
+
+    auto x = deriv::solve_tridiagonal(lower, diag, upper, d);
+
+    REQUIRE(x[0] == Catch::Approx(1.0));
+    REQUIRE(x[1] == Catch::Approx(1.0));
+    REQUIRE(x[2] == Catch::Approx(1.0));
 }

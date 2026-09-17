@@ -12,11 +12,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
-add_executable(deriv_engine src/main.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/tape.cpp src/hedging.cpp src/longstaff_schwartz.cpp)
+add_executable(deriv_engine src/main.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/tape.cpp src/hedging.cpp src/longstaff_schwartz.cpp src/pde_solver.cpp)
 target_include_directories(deriv_engine PUBLIC include)
 
 enable_testing()
-add_executable(tests tests/test_main.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/tape.cpp src/hedging.cpp src/longstaff_schwartz.cpp)
+add_executable(tests tests/test_main.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/tape.cpp src/hedging.cpp src/longstaff_schwartz.cpp src/pde_solver.cpp)
 target_include_directories(tests PUBLIC include)
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain)
 add_test(NAME deriv_engine_tests COMMAND tests)
