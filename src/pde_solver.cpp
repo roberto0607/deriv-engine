@@ -100,4 +100,48 @@ double crank_nicolson_price(const EuropeanOption& option, const MarketData& mark
     return V[idx] * (1.0 - weight) + V[idx + 1] * weight;
 }
 
+double explicit_fd_price(const EuropeanOption& option, const MarketData& market,
+                          int num_price_steps, int num_time_steps) {
+    const double K = option.strike;
+    const double T = option.time_to_expiry;
+    const double r = market.risk_free_rate;
+    const double q = market.dividend_yield;
+    const double sigma = market.volatility;
+
+    const double S_max = 3.0 * K;
+    const double dS = S_max / num_price_steps;
+    const double dt = T / num_time_steps;
+
+    std::vector<double> V(num_price_steps + 1);
+    for (int i = 0; i <= num_price_steps; ++i) {
+        V[i] = payoff(i * dS, K, option.type);
+    }
+
+    for (int step = 0; step < num_time_steps; ++step) {
+        std::vector<double> V_new(num_price_steps + 1);
+        V_new[0] = (option.type == OptionType::Put) ? K * std::exp(-r * (step + 1) * dt) : 0.0;
+        V_new[num_price_steps] = (option.type == OptionType::Call)
+            ? S_max - K * std::exp(-r * (step + 1) * dt)
+            : 0.0;
+
+        for (int i = 1; i < num_price_steps; ++i) {
+            double Si = i * dS;
+            double sigma2S2 = sigma * sigma * Si * Si;
+            double a = 0.5 * dt * (sigma2S2 / (dS * dS) - (r - q) * Si / dS);
+            double b = 1.0 - dt * (sigma2S2 / (dS * dS) + r);
+            double c = 0.5 * dt * (sigma2S2 / (dS * dS) + (r - q) * Si / dS);
+
+            V_new[i] = a * V[i - 1] + b * V[i] + c * V[i + 1];
+        }
+
+        V = V_new;
+    }
+
+    double S0 = market.spot;
+    int idx = static_cast<int>(S0 / dS);
+    idx = std::min(idx, num_price_steps - 1);
+    double weight = (S0 - idx * dS) / dS;
+    return V[idx] * (1.0 - weight) + V[idx + 1] * weight;
+}
+
 }  // namespace deriv

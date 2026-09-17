@@ -548,3 +548,27 @@ TEST_CASE("Crank-Nicolson converges to Black-Scholes for European put", "[pde][c
 
     REQUIRE(pde_price == Catch::Approx(bs_price).epsilon(0.01));
 }
+
+TEST_CASE("Explicit scheme diverges with too-large time step, Crank-Nicolson stays stable", "[.manual][pde][stability]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+    double bs_price = deriv::black_scholes_price(option, market);
+
+    // Deliberately choose a FINE price grid but a COARSE time grid —
+    // this specific combination is what breaks the stability condition
+    // for the explicit scheme (its stability depends on dt being small
+    // relative to dS^2, not just small in absolute terms).
+    int fine_price_steps = 200;
+    int coarse_time_steps = 20;
+
+    double explicit_price = deriv::explicit_fd_price(option, market, fine_price_steps, coarse_time_steps);
+    double cn_price = deriv::crank_nicolson_price(option, market, fine_price_steps, coarse_time_steps);
+
+    WARN("True Black-Scholes price: " << bs_price);
+    WARN("Explicit scheme price (unstable regime): " << explicit_price);
+    WARN("Crank-Nicolson price (same grid): " << cn_price);
+
+    // The explicit scheme should be wildly wrong (or even nan/inf) in
+    // this regime; Crank-Nicolson should still be close to correct.
+    REQUIRE(std::abs(cn_price - bs_price) < 1.0);
+}
