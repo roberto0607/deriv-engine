@@ -494,3 +494,18 @@ TEST_CASE("Longstaff-Schwartz converges to tree price for American put", "[lsm][
     double diff = std::abs(lsm.price - tree_price);
     REQUIRE(diff < 3.0 * lsm.standard_error);
 }
+
+TEST_CASE("Longstaff-Schwartz converges to tree price for American call with dividends", "[lsm][convergence]") {
+    // A call with a meaningful dividend yield — early exercise genuinely
+    // matters here (unlike a non-dividend call, where it never would),
+    // so this exercises the LSM decision logic in a different, equally
+    // real scenario from the put case already tested.
+    deriv::MarketData market{100.0, 0.03, 0.05, 0.25};
+    deriv::AmericanOption option{95.0, 0.5, deriv::OptionType::Call};
+
+    double tree_price = deriv::binomial_tree_price(option, market, 500);
+    deriv::LSMResult lsm = deriv::longstaff_schwartz_price(option, market, 50000, 50, 123);
+
+    double diff = std::abs(lsm.price - tree_price);
+    REQUIRE(diff < 3.0 * lsm.standard_error);
+}
