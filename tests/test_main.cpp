@@ -585,3 +585,16 @@ TEST_CASE("Implied vol solver recovers known volatility from its own price", "[i
     REQUIRE(result.converged);
     REQUIRE(result.vol == Catch::Approx(0.2).epsilon(0.0001));
 }
+
+TEST_CASE("Implied vol solver handles deep OTM gracefully (near-zero vega)", "[implied_vol][edge_case]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{10000.0, 1.0, deriv::OptionType::Call};  // deep OTM, from Phase 1's own test
+
+    double tiny_price = 0.0001;  // an almost-worthless option price
+
+    deriv::ImpliedVolResult result = deriv::implied_volatility(option, market, tiny_price);
+
+    // We don't require convergence here — the point is it doesn't
+    // crash, hang, or produce nan/inf, even in a genuinely hard case.
+    REQUIRE(std::isfinite(result.vol));
+}
