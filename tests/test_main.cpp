@@ -598,3 +598,25 @@ TEST_CASE("Implied vol solver handles deep OTM gracefully (near-zero vega)", "[i
     // crash, hang, or produce nan/inf, even in a genuinely hard case.
     REQUIRE(std::isfinite(result.vol));
 }
+
+TEST_CASE("Implied vol solver on real Deribit BTC put data", "[.manual][implied_vol][real_data]") {
+    // Real snapshot pulled from Deribit's public API, BTC-30OCT26-90000-P
+    double spot = 76871.89;
+    double strike = 90000.0;
+    double mark_price_btc = 0.176;
+    double mark_price_usd = mark_price_btc * spot;
+    double T = 43.0 / 365.0;  // ~43 days to expiry, ACT/365
+    double r = 0.0;           // Deribit reports interest_rate: 0.0 for this instrument
+
+    deriv::MarketData market{spot, r, 0.0, 0.0};  // vol placeholder, ignored by the solver
+    deriv::EuropeanOption option{strike, T, deriv::OptionType::Put};
+
+    deriv::ImpliedVolResult result = deriv::implied_volatility(option, market, mark_price_usd);
+
+    WARN("Mark price (USD): " << mark_price_usd);
+    WARN("Your solved implied vol: " << result.vol * 100.0 << "%");
+    WARN("Deribit's reported mark_iv: 34.36%");
+    WARN("Converged: " << result.converged << ", iterations: " << result.iterations);
+
+    REQUIRE(result.converged);
+}
