@@ -13,6 +13,8 @@
 #include "deriv-engine/longstaff_schwartz.hpp"
 #include "deriv-engine/pde_solver.hpp"
 #include "deriv-engine/implied_vol.hpp"
+#include "deriv-engine/vol_surface.hpp"
+
 
 TEST_CASE("Sanity check", "[placeholder]") {
     REQUIRE(1 + 1 == 2);
@@ -619,4 +621,26 @@ TEST_CASE("Implied vol solver on real Deribit BTC put data", "[.manual][implied_
     WARN("Converged: " << result.converged << ", iterations: " << result.iterations);
 
     REQUIRE(result.converged);
+}
+
+TEST_CASE("Vol surface builds from real Deribit snapshot and mostly converges", "[.manual][vol_surface][real_data]") {
+    auto points = deriv::build_vol_surface_from_snapshot("data/btc_chain_snapshot.json", 2026, 9, 17);
+
+    REQUIRE(points.size() > 50);  // sanity check: real chain should have many contracts
+
+    int converged_count = 0;
+    double total_abs_diff = 0.0;
+    for (const auto& p : points) {
+        if (p.converged) {
+            converged_count++;
+            total_abs_diff += std::abs(p.solved_iv - p.market_iv_reported);
+        }
+    }
+
+    double avg_diff = total_abs_diff / converged_count;
+    WARN("Total contracts parsed: " << points.size());
+    WARN("Converged: " << converged_count);
+    WARN("Average |solved_iv - market_iv| across converged points: " << avg_diff);
+
+    REQUIRE(converged_count > points.size() / 2);  // most should converge
 }

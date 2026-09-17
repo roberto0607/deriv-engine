@@ -12,11 +12,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
-add_executable(deriv_engine src/main.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/tape.cpp src/hedging.cpp src/longstaff_schwartz.cpp src/pde_solver.cpp src/implied_vol.cpp)
+FetchContent_Declare(
+  json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(json)
+
+add_executable(deriv_engine src/main.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/tape.cpp src/hedging.cpp src/longstaff_schwartz.cpp src/pde_solver.cpp src/implied_vol.cpp src/vol_surface.cpp src/vol_surface.cpp)
 target_include_directories(deriv_engine PUBLIC include)
+target_link_libraries(deriv_engine PRIVATE nlohmann_json::nlohmann_json)
 
 enable_testing()
-add_executable(tests tests/test_main.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/tape.cpp src/hedging.cpp src/longstaff_schwartz.cpp src/pde_solver.cpp src/implied_vol.cpp)
+add_executable(tests tests/test_main.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/tape.cpp src/hedging.cpp src/longstaff_schwartz.cpp src/pde_solver.cpp src/implied_vol.cpp src/vol_surface.cpp src/vol_surface.cpp)
 target_include_directories(tests PUBLIC include)
-target_link_libraries(tests PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(tests PRIVATE Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
 add_test(NAME deriv_engine_tests COMMAND tests)
