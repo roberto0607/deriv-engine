@@ -483,3 +483,14 @@ TEST_CASE("Quadratic regression exactly recovers known coefficients with zero no
     REQUIRE(coeffs[1] == Catch::Approx(3.0).epsilon(0.0001));
     REQUIRE(coeffs[2] == Catch::Approx(0.5).epsilon(0.0001));
 }
+
+TEST_CASE("Longstaff-Schwartz converges to tree price for American put", "[lsm][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.03, 0.2};  // nonzero dividend, matters for early exercise
+    deriv::AmericanOption option{100.0, 1.0, deriv::OptionType::Put};
+
+    double tree_price = deriv::binomial_tree_price(option, market, 500);
+    deriv::LSMResult lsm = deriv::longstaff_schwartz_price(option, market, 50000, 50, 42);
+
+    double diff = std::abs(lsm.price - tree_price);
+    REQUIRE(diff < 3.0 * lsm.standard_error);
+}
