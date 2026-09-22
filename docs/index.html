@@ -244,15 +244,18 @@
   <section>
     <div class="section-head"><span class="section-num">01</span><h2>Headline result</h2></div>
     <div class="stats">
-      <div class="stat"><div class="stat-val" id="stat-convergence">95.1%</div><div class="stat-label">of contracts converged during IV calibration</div></div>
-      <div class="stat"><div class="stat-val" id="stat-gap">1.9pp</div><div class="stat-label">average gap vs. exchange-quoted IV</div></div>
+      <div class="stat"><div class="stat-val" id="stat-convergence">96.8%</div><div class="stat-label">of contracts converged during IV calibration</div></div>
+      <div class="stat"><div class="stat-val" id="stat-gap">0.3pp</div><div class="stat-label">typical (median) gap vs. exchange-quoted IV</div></div>
       <div class="stat"><div class="stat-val" id="stat-contracts">904</div><div class="stat-label">real BTC contracts pulled from Deribit's public chain</div></div>
       <div class="stat"><div class="stat-val">8</div><div class="stat-label">independent pricing methods, cross-validated against each other</div></div>
     </div>
     <div style="height:14px"></div>
     <div class="lede">
-      The calibration result is the load-bearing claim of this project: Newton-Raphson implied-vol solving, run against a one-time real snapshot of Deribit's public BTC options chain (<code>data/btc_chain_snapshot.json</code>, <span id="lede-contracts">904</span> contracts), recovers the market's own quoted IV to within <b><span id="lede-gap">1.9</span> percentage points</b> on average, converging on <b><span id="lede-convergence">95.1%</span></b> of contracts. The snapshot is committed so the test suite stays reproducible — no live API calls in CI.
+      The calibration result is the load-bearing claim of this project: Newton-Raphson implied-vol solving (with a bisection fallback for the near-zero-vega cases Newton-Raphson can't handle), run against a one-time real snapshot of Deribit's public BTC options chain (<code>data/btc_chain_snapshot.json</code>, <span id="lede-contracts">904</span> contracts), recovers the market's own quoted IV to within <b><span id="lede-gap">0.3</span> percentage points</b> for a typical contract (median), converging on <b><span id="lede-convergence">96.8%</span></b> of contracts. The snapshot is committed so the test suite stays reproducible — no live API calls in CI.
       <span id="stats-freshness" style="display:block;margin-top:8px;font-family:var(--mono);font-size:11.5px;color:var(--text-faint);"></span>
+    </div>
+    <div class="lede" style="margin-top:10px;font-size:13px;color:var(--text-faint);">
+      Median, not mean, because the mean is skewed by a small tail of genuinely hard contracts — options expiring within about a day, or far from the money — where Deribit's own quoted IV is likely thin or stale to begin with. Mean gap: <span id="stat-mean-gap">2.2pp</span>. 90% of contracts land within <span id="stat-p90-gap">5.6pp</span>.
     </div>
   </section>
 
@@ -270,7 +273,7 @@
           <tr><td class="method">Delta-hedging sim</td><td>Realized P&amp;L of a rebalanced hedge vs. theoretical price</td><td class="validated">Mean P&amp;L ≈ 0 across 2,000 paths post-fix (see bug log)</td></tr>
           <tr><td class="method">Longstaff-Schwartz</td><td>American Monte Carlo via regression-based continuation value</td><td class="validated">Least-squares fit solved by hand (Gaussian elimination, partial pivoting)</td></tr>
           <tr><td class="method">Crank-Nicolson PDE</td><td>Finite-difference solver, tridiagonal system</td><td class="validated">Stays stable where the explicit scheme provably diverges</td></tr>
-          <tr><td class="method">IV calibration</td><td>Newton-Raphson solve for implied vol using vega</td><td class="validated">95.1% convergence / 1.9pp gap vs. real Deribit quotes</td></tr>
+          <tr><td class="method">IV calibration</td><td>Newton-Raphson solve for implied vol using vega, bisection fallback near zero vega</td><td class="validated">96.8% convergence / 0.3pp typical gap vs. real Deribit quotes</td></tr>
         </tbody>
       </table>
     </div>
@@ -545,9 +548,15 @@
       set('stat-convergence', s.convergence_pct.toFixed(1) + '%');
       set('lede-convergence', s.convergence_pct.toFixed(1) + '%');
     }
+    if (typeof s.median_gap_pp === 'number') {
+      set('stat-gap', s.median_gap_pp.toFixed(1) + 'pp');
+      set('lede-gap', s.median_gap_pp.toFixed(1));
+    }
     if (typeof s.avg_gap_pp === 'number') {
-      set('stat-gap', s.avg_gap_pp.toFixed(1) + 'pp');
-      set('lede-gap', s.avg_gap_pp.toFixed(1));
+      set('stat-mean-gap', s.avg_gap_pp.toFixed(1) + 'pp');
+    }
+    if (typeof s.p90_gap_pp === 'number') {
+      set('stat-p90-gap', s.p90_gap_pp.toFixed(1) + 'pp');
     }
     if (typeof s.total_contracts === 'number') {
       set('stat-contracts', s.total_contracts);

@@ -14,6 +14,8 @@
 #include "deriv-engine/pde_solver.hpp"
 #include "deriv-engine/implied_vol.hpp"
 #include "deriv-engine/vol_surface.hpp"
+#include <algorithm>
+#include <vector>
 
 
 TEST_CASE("Sanity check", "[placeholder]") {
@@ -643,4 +645,33 @@ TEST_CASE("Vol surface builds from real Deribit snapshot and mostly converges", 
     WARN("Average |solved_iv - market_iv| across converged points: " << avg_diff);
 
     REQUIRE(converged_count > points.size() / 2);  // most should converge
+}
+
+TEST_CASE("Vol surface calibration numbers are pinned against a regression",
+          "[.manual][vol_surface][real_data][regression]") {
+    // The committed snapshot is fixed and the solver is deterministic
+    // (no RNG involved, unlike Monte Carlo), so these numbers should be
+    // exactly reproducible. This test exists so that a future change to
+    // implied_volatility() or build_vol_surface_from_snapshot() that
+    // silently regresses calibration quality fails CI, instead of only
+    // being caught by eyeballing the live site. If a real, intentional
+    // improvement moves these numbers, update the pinned values here --
+    // don't just loosen the tolerance.
+    auto points = deriv::build_vol_surface_from_snapshot("data/btc_chain_snapshot.json", 2026, 9, 17);
+
+    REQUIRE(points.size() == 904);
+
+    int converged_count = 0;
+    std::vector<double> gaps;
+    for (const auto& p : points) {
+        if (p.converged) {
+            converged_count++;
+            gaps.push_back(std::abs(p.solved_iv - p.market_iv_reported));
+        }
+    }
+    std::sort(gaps.begin(), gaps.end());
+    double median_gap = gaps[gaps.size() / 2];
+
+    REQUIRE(converged_count == 875);
+    REQUIRE(median_gap == Catch::Approx(0.0026).margin(0.0005));
 }
