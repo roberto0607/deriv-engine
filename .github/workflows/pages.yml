@@ -7,7 +7,10 @@ on:
       - 'src/**'
       - 'include/**'
       - 'wasm/**'
+      - 'tools/**'
+      - 'data/**'
       - 'docs/index.html'
+      - 'CMakeLists.txt'
   workflow_dispatch:
 
 jobs:
@@ -35,14 +38,50 @@ jobs:
             -s ALLOW_MEMORY_GROWTH=1 -s SINGLE_FILE=1 \
             -o docs/deriv_engine.js
 
-      - name: Commit rebuilt WASM if changed
+      - name: Install real headers for native build
+        run: sudo apt-get update && sudo apt-get install -y nlohmann-json3-dev
+
+      - name: Build and run the real test suite
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          ./build/tests | tee /tmp/test_output.txt
+
+      - name: Compute real headline stats
+        run: |
+          TEST_OUTPUT=$(cat /tmp/test_output.txt)
+          TESTS=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+ test cases' | grep -oE '^[0-9]+')
+          ASSERTIONS=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+ assertions' | grep -oE '^[0-9]+')
+
+          g++ -std=c++20 -O2 -I include \
+            tools/gen_stats.cpp src/vol_surface.cpp src/implied_vol.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp \
+            -o build/gen_stats
+          ./build/gen_stats > /tmp/calib_stats.json
+
+          TESTS="$TESTS" ASSERTIONS="$ASSERTIONS" python3 - << 'PYEOF'
+          import json, os
+
+          with open('/tmp/calib_stats.json') as f:
+              stats = json.load(f)
+
+          stats['tests'] = int(os.environ['TESTS'])
+          stats['assertions'] = int(os.environ['ASSERTIONS'])
+
+          with open('docs/stats.json', 'w') as f:
+              json.dump(stats, f, indent=2)
+              f.write('\n')
+
+          print(json.dumps(stats, indent=2))
+          PYEOF
+
+      - name: Commit rebuilt assets if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- docs/deriv_engine.js; then
-            git add docs/deriv_engine.js
-            git commit -m "chore: rebuild WASM demo [skip ci]"
+          git add docs/deriv_engine.js docs/stats.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: rebuild WASM demo and refresh live stats [skip ci]"
             git push
           else
-            echo "No changes to docs/deriv_engine.js — skipping commit"
+            echo "No changes to docs/deriv_engine.js or docs/stats.json — skipping commit"
           fi

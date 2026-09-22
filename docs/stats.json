@@ -1,0 +1,8 @@
+{
+  "total_contracts": 904,
+  "converged_contracts": 860,
+  "convergence_pct": 95.1,
+  "avg_gap_pp": 1.9,
+  "tests": 34,
+  "assertions": 76
+}
