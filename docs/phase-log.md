@@ -826,3 +826,97 @@ method) and explain in one sentence why it works where pathwise
 doesn't: it differentiates the path's PROBABILITY of occurring, not
 the payoff's VALUE, so it never needs the payoff itself to be twice
 differentiable.
+
+## Phase 12 — Multi-expiry Heston calibration (done)
+
+**What was built:**
+- Discovered, rather than wrote: `calibrate_heston()` (Phase 8/9) was
+  already generic over expiries — it prices every point at that point's
+  own `time_to_expiry`, with no single-expiry assumption anywhere in its
+  implementation. The single-expiry framing in its original header
+  comment was a usage decision, not a technical limitation. Updated that
+  header comment (`heston_calibration.hpp`) to say so precisely, instead
+  of writing a second, parallel calibration function that would have
+  duplicated working code
+- A synthetic identifiability test
+  (`"Multi-expiry Heston calibration resolves the single-expiry
+  kappa/theta non-identifiability"`, `tests/test_main.cpp`) that makes
+  the Phase 8 non-identifiability finding concrete on both sides: the
+  same ground truth, the same deliberately-bad initial guess, calibrated
+  once against one synthetic expiry and once against three pooled
+  synthetic expiries
+- `tools/calibrate_heston_multi.cpp`: a real-data counterpart to
+  `tools/calibrate_heston.cpp`, pooling the ~43-day and ~99-day expiries
+  from the real Deribit snapshot (same moneyness/liquidity filter) into
+  one joint fit, instead of one expiry alone
+
+**Validated against:**
+- Synthetic ground truth (`v0=0.16, kappa=2.0, theta=0.09, xi=0.5,
+  rho=-0.6` — `v0 != theta` deliberately, to create a genuine variance
+  term structure for multiple expiries to carry different information
+  about; if `v0 == theta`, variance never mean-reverts and kappa stays
+  unidentifiable regardless of how many expiries are pooled). From the
+  same bad guess (`kappa=6.0` against a true `2.0`): single-expiry
+  calibration reprices its one synthetic expiry to <0.01% RMSE while
+  recovering a kappa over 200% off the truth (the identifiability
+  failure, isolated); multi-expiry calibration, same guess, three pooled
+  expiries, recovers all 5 parameters to within floating-point noise of
+  the truth
+- The real Deribit chain, pooling the 43-day (94 contracts) and 99-day
+  (66 contracts) slices under the same moneyness filter
+  (`tools/calibrate_heston.cpp` uses): converges to a fit at 1.35
+  percentage points RMSE in vol-space — worse than the single-expiry
+  tool's 0.43pp on its own slice, but still better than the flat-vol
+  headline result's ~1.9pp mean gap across the whole chain
+
+**The honest finding — multi-expiry calibration resolves identifiability
+on synthetic data, and exposes a real limitation on real data:**
+Pooling expiries is not a strictly-better replacement for the
+single-expiry + regularization approach Phase 8 used; it trades one
+problem for a different, more informative one. On synthetic data
+generated FROM Heston with fixed parameters, pooling expiries recovers
+those exact parameters, because the data-generating process really is
+constant-parameter Heston — there's nothing for the model to fail to
+capture. On the real chain, the market's actual volatility dynamics are
+not exactly constant-parameter Heston, and forcing a joint fit across
+multiple real maturities makes that mismatch visible: fit quality
+degrades as more expiries are pooled (2 expiries: 1.35pp; 3 expiries
+[43d/99d/190d]: ~2.2pp; 4 expiries [+281d]: ~2.9-3.1pp, measured during
+development, not included in the shipped tool). This is the expected,
+well-known behavior of a single-factor stochastic-vol model asked to fit
+a full term structure with one fixed parameter set — not a bug, and not
+something a better optimizer or more iterations would fix. Properly
+resolving it needs a term-structure extension (piecewise-constant
+parameters per maturity bucket, or a multi-factor model like Bergomi),
+deliberately out of scope here, consistent with every other scope
+decision in this project.
+
+**Why the real-data multi-expiry result didn't replace the demo's Heston
+card:** the single-expiry number (0.43pp) is a clean, strong, honest
+answer to "does Heston fit today's smile well?" The multi-expiry number
+(1.35pp) is an honest answer to a different, more nuanced question ("can
+one Heston parameter set explain several maturities at once?") that
+doesn't compress into a single headline stat without the explanation
+above. Rather than either hiding the weaker number or overselling it,
+it's documented here and kept as a standalone tool + test, with the
+finding written down plainly — see `docs/numerics.md`.
+
+**Defend this:**
+Can explain precisely why `calibrate_heston()` needed no code changes to
+support multi-expiry calibration: it already prices each point against
+its own `time_to_expiry`, so "single-expiry" was always just a property
+of what the caller passed in, not of the function. Can explain the
+identifiability mechanism itself: a single expiry's option prices
+constrain kappa and theta only through an integrated combination of the
+two (roughly, the average variance over that one time horizon), so many
+(kappa, theta) pairs with the same integrated effect price that expiry
+identically; multiple expiries at different horizons sample that average
+at different stages of mean-reversion, which is what breaks the tie. Can
+explain, with the actual measured numbers, why the real-data result gets
+WORSE as more expiries are added rather than converging to a clean
+answer — and can state directly that this is the correct, expected
+behavior of a single-factor model meeting real term-structure dynamics
+it cannot represent, not a defect in the fitting code. Can name the real
+fix (piecewise-constant parameters or a multi-factor model) and explain
+why it's out of scope: it's a genuinely different model, not a tuning
+change to this one.

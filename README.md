@@ -95,13 +95,22 @@ evidence for this engine.
   estimator needs a different technique entirely (e.g. the likelihood-
   ratio method) — documented, not silently worked around. See
   `docs/phase-log.md` Phase 11.
-- **Heston calibration is honest about non-identifiability.** kappa
-  and theta aren't separately identifiable from a single expiry's
-  smile — an unregularized fit converges to a valid but implausible
-  parameter set. Real-data calibration uses a small L2 penalty toward
-  a reasonable initial guess to resolve this; the synthetic
-  parameter-recovery test deliberately doesn't, so its accuracy
-  assertions stay meaningful. See `include/deriv-engine/heston_calibration.hpp`.
+- **Heston calibration is honest about non-identifiability — and about
+  what actually fixes it.** kappa and theta aren't separately
+  identifiable from a single expiry's smile — an unregularized fit
+  converges to a valid but implausible parameter set. Real-data
+  calibration uses a small L2 penalty toward a reasonable initial guess
+  to resolve this; the synthetic parameter-recovery test deliberately
+  doesn't, so its accuracy assertions stay meaningful. The actual fix —
+  calibrating jointly across multiple expiries instead of regularizing
+  a single one — is measured directly: on synthetic data it recovers
+  all 5 parameters to floating-point precision from a deliberately bad
+  guess; on the real chain it exposes that constant-parameter Heston
+  genuinely can't fit several real maturities as tightly as it fits one
+  (1.35pp RMSE pooling 2 expiries vs. 0.43pp on a single expiry) — a
+  real, documented limitation, not swept under the regularizer. See
+  `include/deriv-engine/heston_calibration.hpp` and `docs/numerics.md`
+  Phase 12.
 - **Reproducible market data.** Live data is pulled once and frozen
   to a snapshot (`data/btc_chain_snapshot.json`) rather than tests
   depending on a live API call, keeping the test suite deterministic.

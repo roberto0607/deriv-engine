@@ -1388,3 +1388,89 @@ TEST_CASE("Heston calibrates to the real Deribit BTC chain with a competitive fi
     // hovers just above 1.0).
     REQUIRE(result.rmse_iv_pp < 1.0);
 }
+
+TEST_CASE("Multi-expiry Heston calibration resolves the single-expiry kappa/theta "
+          "non-identifiability",
+          "[heston][calibration][multi_expiry]") {
+    // calibrate_heston() is generic over expiries -- see heston_calibration.hpp's
+    // updated header comment -- but the single-expiry test above deliberately does
+    // NOT check kappa/theta against ground truth, because one expiry's smile does
+    // not pin them down uniquely. This test makes that identifiability gap, and
+    // its resolution, directly visible: the SAME synthetic ground truth, the SAME
+    // deliberately-bad initial guess, calibrated once against a single expiry and
+    // once against three pooled expiries.
+    //
+    // v0 != theta is essential here: it creates a genuine variance term structure
+    // (v(t) decays from v0 toward theta as t grows) for multiple expiries to carry
+    // different information about. If v0 == theta, variance never mean-reverts and
+    // kappa stays unidentifiable no matter how many expiries are used.
+    deriv::HestonParams truth{0.16, 2.0, 0.09, 0.5, -0.6};
+    double spot = 50000.0, r = 0.03;
+    std::vector<double> strikes = {40000, 45000, 47500, 50000, 52500, 55000, 60000};
+    std::vector<double> Ts = {30.0 / 365.0, 90.0 / 365.0, 270.0 / 365.0};
+
+    auto gen_points = [&](double T) {
+        std::vector<deriv::VolSurfacePoint> pts;
+        for (double K : strikes) {
+            for (deriv::OptionType type : {deriv::OptionType::Call, deriv::OptionType::Put}) {
+                deriv::EuropeanOption opt{K, T, type};
+                deriv::MarketData market{spot, r, 0.0, 0.0};
+                double price = deriv::heston_price(opt, market, truth);
+                deriv::ImpliedVolResult iv = deriv::implied_volatility(opt, market, price);
+
+                deriv::VolSurfacePoint p;
+                p.strike = K;
+                p.time_to_expiry = T;
+                p.moneyness = K / spot;
+                p.type = type;
+                p.market_iv_reported = iv.vol;
+                p.solved_iv = iv.vol;
+                p.converged = iv.converged;
+                p.underlying_price = spot;
+                p.market_price_usd = price;
+                p.risk_free_rate = r;
+                pts.push_back(p);
+            }
+        }
+        return pts;
+    };
+
+    std::vector<deriv::VolSurfacePoint> single_expiry = gen_points(Ts[1]);  // 90d only
+    std::vector<deriv::VolSurfacePoint> pooled;
+    for (double T : Ts) {
+        auto pts = gen_points(T);
+        pooled.insert(pooled.end(), pts.begin(), pts.end());
+    }
+
+    // v0 correct, kappa >3x too fast, theta correct, xi and rho both off --
+    // deliberately not "near the answer".
+    deriv::HestonParams bad_guess{0.16, 6.0, 0.09, 0.3, -0.4};
+
+    deriv::HestonCalibrationResult single = deriv::calibrate_heston(single_expiry, spot, r, bad_guess, 0.0);
+    deriv::HestonCalibrationResult multi = deriv::calibrate_heston(pooled, spot, r, bad_guess, 0.0);
+
+    INFO("single-expiry: v0=" << single.params.v0 << " kappa=" << single.params.kappa
+                               << " theta=" << single.params.theta << " xi=" << single.params.xi
+                               << " rho=" << single.params.rho << " rmse_rel_price=" << single.rmse_relative_price);
+    INFO("multi-expiry:  v0=" << multi.params.v0 << " kappa=" << multi.params.kappa
+                               << " theta=" << multi.params.theta << " xi=" << multi.params.xi
+                               << " rho=" << multi.params.rho << " rmse_rel_price=" << multi.rmse_relative_price);
+
+    // Both fits should reprice their own data almost exactly -- this is what
+    // makes the single-expiry result a genuine identifiability failure rather
+    // than "just a worse fit": it's an EXCELLENT fit with the wrong kappa/theta.
+    REQUIRE(single.rmse_relative_price < 0.01);
+    REQUIRE(multi.rmse_relative_price < 0.01);
+
+    // Single-expiry: despite that excellent fit, kappa is NOT recovered --
+    // the optimizer is free to run off along the unidentified ridge.
+    double single_kappa_rel_err = std::abs(single.params.kappa - truth.kappa) / truth.kappa;
+    REQUIRE(single_kappa_rel_err > 0.3);
+
+    // Multi-expiry: the SAME bad initial guess, but pooling three maturities
+    // pins kappa and theta down to close to the true values.
+    REQUIRE(multi.params.kappa == Catch::Approx(truth.kappa).epsilon(0.10));
+    REQUIRE(multi.params.theta == Catch::Approx(truth.theta).epsilon(0.10));
+    REQUIRE(multi.params.v0 == Catch::Approx(truth.v0).epsilon(0.05));
+    REQUIRE(multi.params.rho == Catch::Approx(truth.rho).epsilon(0.05));
+}

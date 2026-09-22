@@ -493,3 +493,64 @@ vega guard triggered on the very first iteration) or exactly 0.01
 (the clamp floor, meaning one Newton step overshot before hitting the
 guard). This is the predicted pattern from the solver's design,
 confirmed directly against real failure data rather than assumed.
+
+## Heston calibration: single-expiry vs. multi-expiry (Phase 12)
+
+**The identifiability problem, made concrete:**
+`calibrate_heston()` (`heston_calibration.hpp`) was, from the start, generic
+over which points it's given -- it prices each point at its own
+`time_to_expiry`, with nothing in the code assuming a single expiry. What
+changed in this phase is not the calibrator, but what's fed into it, and
+an honest accounting of what that choice buys and costs.
+
+Fit Heston to one expiry's smile, and kappa (mean-reversion speed) and
+theta (long-run variance) are not separately identifiable: many (kappa,
+theta) pairs price that one maturity almost identically, since what a
+single-T price actually constrains is closer to an integrated combination
+of the two. A synthetic test (`tests/test_main.cpp`, "Multi-expiry Heston
+calibration resolves the single-expiry kappa/theta non-identifiability")
+makes this concrete rather than asserted: starting from the same
+deliberately-bad initial guess (kappa=6.0 against a true kappa=2.0),
+calibrating against a single 90-day synthetic expiry recovers kappa over
+200% off the true value -- while fitting that expiry's prices to within
+0.01% RMSE. That's the identifiability failure in one number: an
+excellent fit, a wrong kappa. Calibrating the same optimizer against the
+same three synthetic expiries (30d, 90d, 270d) pooled, from the same bad
+guess, recovers all five parameters to within floating-point noise of the
+truth. Pooling expiries works because variance mean-reverts at a specific
+rate: contracts at different maturities sample different stages of that
+reversion, and fitting all of them at once with one shared parameter set
+pins the rate down.
+
+**On real data, the honest result is messier:**
+`tools/calibrate_heston_multi.cpp` runs the same joint fit against the
+real Deribit snapshot, pooling the ~43-day and ~99-day expiries (94 and 66
+contracts respectively, same moneyness/liquidity filter as
+`tools/calibrate_heston.cpp`). Fit quality: 1.35 percentage points RMSE in
+vol space -- comfortably worse than the single-expiry tool's 0.43pp on its
+own slice, though still better than the flat-vol baseline (headline result
+above, ~1.9pp mean gap across the whole chain). Pooling a third or fourth
+expiry (190d, 281d) was tried during development and makes this worse,
+not better: 3 expiries lands around 2.2pp, 4 expiries around 2.9-3.1pp,
+degrading as more maturities are added.
+
+This is not a bug in the calibrator or the pooling logic -- it's
+`calibrate_heston` correctly reporting that a single (kappa, theta, xi,
+rho) parameter set genuinely cannot reproduce multiple real maturities'
+smiles as well as a fresh fit reproduces any one of them. Real markets'
+volatility dynamics have term structure that one-factor Heston, run with
+fixed parameters, doesn't fully capture -- a well-known limitation in the
+literature, not specific to this implementation. Properly closing that
+gap needs a term-structure extension (piecewise-constant parameters, or a
+multi-factor model like Bergomi), which is out of scope here, in the same
+spirit as the other deliberate scope decisions in this document.
+
+**Why `tools/calibrate_heston_multi.cpp` isn't wired into the live demo:**
+The single-expiry tool feeds the demo's Heston card because it answers a
+clean question (does Heston fit today's smile well?) with a clean, strong
+number (0.43pp). The multi-expiry tool answers a more nuanced question
+(can one Heston parameter set explain several maturities at once?) with
+an honest but weaker number, and that nuance doesn't compress well into a
+single demo stat without the surrounding explanation this section
+provides. It's kept as a standalone research tool and test, documented
+here rather than headlined.
