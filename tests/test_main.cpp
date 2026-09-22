@@ -14,6 +14,7 @@
 #include "deriv-engine/pde_solver.hpp"
 #include "deriv-engine/implied_vol.hpp"
 #include "deriv-engine/vol_surface.hpp"
+#include "deriv-engine/heston.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -753,7 +754,7 @@ TEST_CASE("Vol surface calibration numbers are pinned against a regression",
     // implied_volatility() or build_vol_surface_from_snapshot() that
     // silently regresses calibration quality fails CI, instead of only
     // being caught by eyeballing the live site. If a real, intentional
-    // improvement moves these numbers, update the pinned values here --
+    // improvement moves these numbers, update the pinned values here —
     // don't just loosen the tolerance.
     auto points = deriv::build_vol_surface_from_snapshot("data/btc_chain_snapshot.json", 2026, 9, 17);
 
@@ -772,4 +773,146 @@ TEST_CASE("Vol surface calibration numbers are pinned against a regression",
 
     REQUIRE(converged_count == 875);
     REQUIRE(median_gap == Catch::Approx(0.0026).margin(0.0005));
+}
+
+// --- Heston COS-method pricer ---------------------------------------------
+//
+// heston.cpp's own header comments document two independent correctness
+// checks for the characteristic function: this deterministic-variance
+// limit (below) and a Monte Carlo cross-check of the actual Heston SDEs
+// (not yet implemented -- tracked as a follow-up). This limit test is the
+// stronger of the two for catching CF bugs: with xi -> 0 the variance
+// process has (almost) no randomness, v(t) stays at v0 = theta for all t,
+// and the Heston model must degenerate EXACTLY to Black-Scholes with
+// sigma = sqrt(v0). Any sign error in g(u) or the wrong branch of d(u)
+// in heston_log_return_cf shows up here as a real pricing discrepancy,
+// not just a numerical-stability artifact.
+TEST_CASE("Heston collapses to Black-Scholes in the deterministic-variance limit",
+          "[heston][property]") {
+    struct Scenario {
+        double spot, strike, T, vol;
+        deriv::OptionType type;
+        const char* label;
+    };
+
+    std::vector<Scenario> scenarios = {
+        {100.0, 100.0, 1.0, 0.20, deriv::OptionType::Call, "ATM call, 1yr, 20% vol"},
+        {100.0, 100.0, 1.0, 0.20, deriv::OptionType::Put, "ATM put, 1yr, 20% vol"},
+        {100.0, 130.0, 1.0, 0.35, deriv::OptionType::Call, "30% OTM call, 1yr, 35% vol"},
+        {100.0, 70.0, 1.0, 0.35, deriv::OptionType::Put, "30% OTM put, 1yr, 35% vol"},
+        {100.0, 100.0, 1.0 / 365.0, 0.20, deriv::OptionType::Call, "ATM call, 1-day, 20% vol"},
+        {100.0, 100.0, 3.0, 0.60, deriv::OptionType::Call, "ATM call, 3yr, 60% vol"},
+        {100000.0, 120000.0, 90.0 / 365.0, 0.80, deriv::OptionType::Call, "BTC 20% OTM call, 90d, 80% vol"},
+        {100000.0, 80000.0, 90.0 / 365.0, 0.80, deriv::OptionType::Put, "BTC 20% OTM put, 90d, 80% vol"},
+    };
+
+    // xi is small but not literally zero: heston_log_return_cf divides by
+    // xi^2 in a couple of intermediate quantities (cancelled analytically,
+    // per the comments in heston.cpp), and a genuinely zero xi would test
+    // that cancellation rather than the deterministic-variance limit
+    // itself. 1e-6 puts the variance process's own randomness many orders
+    // of magnitude below the pricing tolerance below while still
+    // exercising the real code path.
+    const double xi = 1e-6;
+
+    for (const auto& s : scenarios) {
+        INFO(s.label);
+
+        deriv::HestonParams params{s.vol * s.vol, 2.0, s.vol * s.vol, xi, -0.5};
+        deriv::MarketData market{s.spot, 0.05, 0.0, 0.0};  // vol unused by Heston pricer
+        deriv::EuropeanOption option{s.strike, s.T, s.type};
+
+        double heston = deriv::heston_price(option, market, params);
+
+        deriv::MarketData bs_market{s.spot, 0.05, 0.0, s.vol};
+        double bs = deriv::black_scholes_price(option, bs_market);
+
+        REQUIRE(heston == Catch::Approx(bs).epsilon(0.001));
+    }
+}
+
+TEST_CASE("Heston call and put prices satisfy put-call parity", "[heston]") {
+    // Checked directly against Heston's own put-call parity relation
+    // (independent of Black-Scholes), across parameter sets that actually
+    // exercise stochastic vol (nonzero xi, nonzero rho) -- unlike the
+    // deterministic-variance limit test above, which deliberately keeps
+    // xi negligible.
+    struct Params {
+        deriv::HestonParams heston;
+        double spot, strike, T, r, q;
+        const char* label;
+    };
+
+    std::vector<Params> cases = {
+        {{0.04, 2.0, 0.04, 0.5, -0.7}, 100.0, 100.0, 1.0, 0.05, 0.0, "ATM, moderate vol-of-vol, negative rho"},
+        {{0.64, 1.5, 0.64, 0.9, -0.6}, 100000.0, 110000.0, 90.0 / 365.0, 0.05, 0.0, "BTC-like, high vol-of-vol"},
+        {{0.09, 3.0, 0.16, 0.3, 0.4}, 100.0, 90.0, 2.0, 0.03, 0.02, "positive rho, v0 != theta, with dividend"},
+    };
+
+    for (const auto& c : cases) {
+        INFO(c.label);
+
+        deriv::MarketData market{c.spot, c.r, c.q, 0.0};
+        deriv::EuropeanOption call{c.strike, c.T, deriv::OptionType::Call};
+        deriv::EuropeanOption put{c.strike, c.T, deriv::OptionType::Put};
+
+        double call_price = deriv::heston_price(call, market, c.heston);
+        double put_price = deriv::heston_price(put, market, c.heston);
+
+        double disc_spot = c.spot * std::exp(-c.q * c.T);
+        double disc_strike = c.strike * std::exp(-c.r * c.T);
+
+        REQUIRE(call_price - put_price == Catch::Approx(disc_spot - disc_strike).margin(1e-6));
+    }
+}
+
+TEST_CASE("Heston call price increases monotonically with initial variance", "[heston][property]") {
+    // A basic model-sanity check independent of any closed-form
+    // reference: holding everything else fixed, more initial variance
+    // should never make a European call cheaper. Not a tight numerical
+    // check, but exactly the kind of bug (e.g. a sign error reversing
+    // the CF's dependence on v0) that could otherwise slip past the
+    // deterministic-variance and put-call-parity tests above, since
+    // both of those only probe specific slices of parameter space.
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.0};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    std::vector<double> v0_values = {0.01, 0.04, 0.09, 0.16, 0.25};
+    double prev_price = -1.0;
+    for (double v0 : v0_values) {
+        deriv::HestonParams params{v0, 2.0, 0.04, 0.5, -0.5};
+        double price = deriv::heston_price(option, market, params);
+        REQUIRE(price > prev_price);
+        prev_price = price;
+    }
+}
+
+TEST_CASE("Heston price reduces to intrinsic value as expiry approaches", "[heston][edge_case]") {
+    deriv::HestonParams params{0.04, 2.0, 0.04, 0.5, -0.5};
+
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.0};
+    deriv::EuropeanOption itm_call{80.0, 0.0, deriv::OptionType::Call};
+    deriv::EuropeanOption otm_call{120.0, 0.0, deriv::OptionType::Call};
+    deriv::EuropeanOption itm_put{120.0, 0.0, deriv::OptionType::Put};
+
+    REQUIRE(deriv::heston_price(itm_call, market, params) == Catch::Approx(20.0).margin(1e-9));
+    REQUIRE(deriv::heston_price(otm_call, market, params) == Catch::Approx(0.0).margin(1e-9));
+    REQUIRE(deriv::heston_price(itm_put, market, params) == Catch::Approx(20.0).margin(1e-9));
+}
+
+TEST_CASE("Heston pricer stays finite when the Feller condition is violated", "[heston][edge_case]") {
+    // Real BTC vol surfaces routinely violate the Feller condition
+    // (2*kappa*theta > xi^2, which would keep the variance process away
+    // from zero); the COS method doesn't simulate the SDE path-by-path,
+    // so it shouldn't care, but this is worth pinning down explicitly
+    // since it's exactly the regime the live calibration will hit.
+    deriv::HestonParams params{0.5, 0.3, 0.5, 2.5, -0.8};  // xi^2=6.25 >> 2*kappa*theta=0.3
+    REQUIRE(2.0 * params.kappa * params.theta < params.xi * params.xi);
+
+    deriv::MarketData market{100000.0, 0.05, 0.0, 0.0};
+    deriv::EuropeanOption option{100000.0, 30.0 / 365.0, deriv::OptionType::Call};
+
+    double price = deriv::heston_price(option, market, params);
+    REQUIRE(std::isfinite(price));
+    REQUIRE(price > 0.0);
 }
