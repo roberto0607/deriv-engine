@@ -14,6 +14,12 @@ struct VolSurfacePoint {
     double market_iv_reported;  // Deribit's own mark_iv, as a fraction (not percent)
     double solved_iv;           // this engine's independently-solved implied vol
     bool converged;
+
+    // Carried through for consumers (e.g. Heston calibration) that need
+    // to reprice this exact contract rather than just compare vols.
+    double underlying_price;
+    double market_price_usd;
+    double risk_free_rate;
 };
 
 // Parses a Deribit book-summary JSON snapshot and solves implied vol

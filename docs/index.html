@@ -379,7 +379,7 @@
 
   <section>
     <div class="section-head"><span class="section-num">06</span><h2>Try it live</h2></div>
-    <p class="section-sub">This isn't a JS reimplementation — <code style="font-family:var(--mono);color:var(--teal)">wasm_bridge.cpp</code> compiles the real <code style="font-family:var(--mono);color:var(--teal)">src/black_scholes.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">tree_pricer.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">monte_carlo.cpp</code> and <code style="font-family:var(--mono);color:var(--teal)">implied_vol.cpp</code> and <code style="font-family:var(--mono);color:var(--teal)">heston.cpp</code> to WebAssembly via Emscripten. Every number below comes out of your actual compiled C++.</p>
+    <p class="section-sub">This isn't a JS reimplementation — <code style="font-family:var(--mono);color:var(--teal)">wasm_bridge.cpp</code> compiles the real <code style="font-family:var(--mono);color:var(--teal)">src/black_scholes.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">tree_pricer.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">monte_carlo.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">implied_vol.cpp</code> and <code style="font-family:var(--mono);color:var(--teal)">heston.cpp</code> to WebAssembly via Emscripten. Every number below comes out of your actual compiled C++.</p>
     <div class="calc-card">
       <div class="calc-status" id="engine-status"><span class="pulse"></span><span id="engine-status-text">loading engine…</span></div>
 
@@ -416,6 +416,7 @@
       </div>
 
       <div class="calc-note" id="calc-note">Analytical Greeks are computed from the closed-form solution; the tree and Monte Carlo columns exist to show three independently-derived methods agreeing on the same price.</div>
+      <div class="calc-note" id="heston-calibration-note">Heston's kappa/xi/rho use illustrative defaults (calibrated values load below once available).</div>
     </div>
   </section>
 
@@ -439,6 +440,14 @@
   var statusEl = document.getElementById('engine-status');
   var statusText = document.getElementById('engine-status-text');
   var runBtn = document.getElementById('calc-run-btn');
+
+  // kappa/xi/rho for the Heston card below. Start as a fallback (used
+  // only if heston_calibration.json can't be fetched, e.g. a local
+  // file:// preview) and get overwritten with the real calibrated values
+  // fetched further down — see that block for how those numbers are
+  // produced (tools/calibrate_heston.cpp, run by CI against the real
+  // Deribit snapshot, same pattern as stats.json).
+  var hestonKappa = 2.0, hestonXi = 0.5, hestonRho = -0.6;
 
   function setStatus(cls, text){
     statusEl.className = 'calc-status ' + cls;
@@ -515,13 +524,14 @@
     // Heston (stochastic vol, COS method) — always European, like BS and MC.
     // This calculator only exposes a single flat vol, not a full Heston
     // parameter set, so v0/theta are derived from that input (variance =
-    // vol^2, flat term structure) and kappa/xi/rho use fixed illustrative
-    // values typical of a BTC-ish negative-skew smile. That's why this
-    // price differs from Black-Scholes even at the same "vol" input: the
-    // stochastic-vol dynamics (vol-of-vol, mean reversion, spot-vol
-    // correlation) change the option's fair value beyond what a single
-    // flat vol number captures -- that's the entire point of the model.
-    var hestonKappa = 2.0, hestonXi = 0.5, hestonRho = -0.6;
+    // vol^2, flat term structure); kappa/xi/rho are calibrated against
+    // the real Deribit chain (see the fetch block below and
+    // tools/calibrate_heston.cpp) rather than hand-picked. That's why
+    // this price differs from Black-Scholes even at the same "vol"
+    // input: the stochastic-vol dynamics (vol-of-vol, mean reversion,
+    // spot-vol correlation) change the option's fair value beyond what a
+    // single flat vol number captures -- that's the entire point of the
+    // model.
     var heston = Module.ccall('bridge_heston_price', 'number',
       ['number','number','number','number','number','number','number','number','number','number','number'],
       [p.spot, p.rate, 0, p.strike, p.T, p.type,
@@ -547,6 +557,37 @@
   });
 
   runBtn.addEventListener('click', price);
+
+  // Pulls Heston's kappa/xi/rho from docs/heston_calibration.json, which CI
+  // regenerates on every push by running tools/calibrate_heston.cpp against
+  // the committed Deribit snapshot -- a real least-squares fit to a single
+  // expiry's actual smile, not hand-picked. v0/theta stay derived from the
+  // calculator's own flat-vol input (see price() above); only the three
+  // structural parameters come from this file. Falls back silently to the
+  // illustrative defaults already declared above if the file is missing or
+  // unreachable (e.g. a local file:// preview), same pattern as stats.json.
+  // Lives in this same closure (not a separate script block) specifically
+  // so it can see and update hestonKappa/hestonXi/hestonRho and call
+  // price() directly, rather than needing some separate cross-script
+  // handoff.
+  fetch('heston_calibration.json', {cache: 'no-store'}).then(function(res){
+    if (!res.ok) throw new Error('heston_calibration.json not found');
+    return res.json();
+  }).then(function(c){
+    if (typeof c.kappa === 'number') hestonKappa = c.kappa;
+    if (typeof c.xi === 'number') hestonXi = c.xi;
+    if (typeof c.rho === 'number') hestonRho = c.rho;
+    var note = document.getElementById('heston-calibration-note');
+    if (note && typeof c.expiry_days === 'number' && typeof c.contracts_used === 'number') {
+      note.textContent = 'kappa/xi/rho calibrated against ' + c.contracts_used +
+        ' real Deribit contracts at the ' + c.expiry_days.toFixed(0) + '-day expiry (fit: ' +
+        (typeof c.rmse_iv_pp === 'number' ? c.rmse_iv_pp.toFixed(2) : '?') + 'pp RMSE) — not hand-picked.';
+    }
+    if (Module) price();  // re-price with the calibrated params if the engine already loaded
+  }).catch(function(){
+    // heston_calibration.json not available yet — the illustrative
+    // defaults declared above stand as-is.
+  });
 })();
 </script>
 <script>

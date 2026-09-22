@@ -16,6 +16,7 @@
 #include "deriv-engine/vol_surface.hpp"
 #include "deriv-engine/heston.hpp"
 #include "deriv-engine/heston_mc.hpp"
+#include "deriv-engine/heston_calibration.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -1008,4 +1009,178 @@ TEST_CASE("Heston Monte Carlo (independent SDE simulation) agrees with the COS-m
         REQUIRE(mc.standard_error > 0.0);
         REQUIRE(cos_price == Catch::Approx(mc.price).margin(5.0 * mc.standard_error));
     }
+}
+
+// --- Heston calibration -----------------------------------------------
+
+TEST_CASE("Heston calibration recovers a synthetic smile from a deliberately bad initial guess",
+          "[heston][calibration]") {
+    // Ground truth: generate a full synthetic options chain (12 strikes x
+    // both call/put, one expiry) FROM a known Heston parameter set, solve
+    // each contract's Black-Scholes-equivalent implied vol the same way
+    // build_vol_surface_from_snapshot() would for real data, then check
+    // that calibrate_heston() -- starting from parameters that don't
+    // resemble the truth at all -- converges to a fit that reprices this
+    // synthetic smile accurately.
+    //
+    // This deliberately does NOT assert the calibrated (v0, kappa, theta,
+    // xi, rho) match the ground-truth values component-by-component.
+    // That would be the wrong test: Heston's kappa (mean-reversion speed)
+    // and theta (long-run variance) are not separately identifiable from
+    // a single expiry's smile -- many (kappa, theta) pairs price that one
+    // maturity almost identically, since what actually shows up in a
+    // single-T price is closer to an integrated combination of the two,
+    // not either one alone. Multiple *equally valid* parameter sets can
+    // fit the same single-expiry smile; asserting one specific set is the
+    // "right" answer would make this test fail on a correct calibrator.
+    // What's actually well-identified from one expiry -- v0 (sets the
+    // ATM level) and rho (sets the skew direction/steepness) -- IS
+    // checked directly below, and the fit quality (which is the thing
+    // that actually matters for repricing) is checked for everyone.
+    deriv::HestonParams truth{0.36, 2.0, 0.30, 0.7, -0.55};
+    double spot = 100000.0, r = 0.05, T = 90.0 / 365.0;
+
+    std::vector<double> strikes = {70000, 80000, 85000, 90000, 95000, 100000,
+                                    105000, 110000, 115000, 120000, 130000, 150000};
+    std::vector<deriv::VolSurfacePoint> points;
+    for (double K : strikes) {
+        for (deriv::OptionType type : {deriv::OptionType::Call, deriv::OptionType::Put}) {
+            deriv::EuropeanOption opt{K, T, type};
+            deriv::MarketData market{spot, r, 0.0, 0.0};
+            double price = deriv::heston_price(opt, market, truth);
+            deriv::ImpliedVolResult iv = deriv::implied_volatility(opt, market, price);
+
+            deriv::VolSurfacePoint p;
+            p.strike = K;
+            p.time_to_expiry = T;
+            p.moneyness = K / spot;
+            p.type = type;
+            p.market_iv_reported = iv.vol;
+            p.solved_iv = iv.vol;
+            p.converged = iv.converged;
+            p.underlying_price = spot;
+            p.market_price_usd = price;
+            p.risk_free_rate = r;
+            points.push_back(p);
+        }
+    }
+
+    // Deliberately far from the truth: half the ATM variance, half the
+    // mean-reversion speed, less than half the vol-of-vol, weaker
+    // correlation. If calibration only "works" when started near the
+    // answer, that's not really calibration.
+    deriv::HestonParams bad_guess{0.09, 1.0, 0.09, 0.3, -0.3};
+
+    deriv::HestonCalibrationResult result = deriv::calibrate_heston(points, spot, r, bad_guess);
+
+    INFO("calibrated v0=" << result.params.v0 << " kappa=" << result.params.kappa
+                           << " theta=" << result.params.theta << " xi=" << result.params.xi
+                           << " rho=" << result.params.rho);
+    INFO("rmse_relative_price=" << result.rmse_relative_price << " rmse_iv_pp=" << result.rmse_iv_pp);
+
+    REQUIRE(result.num_points_used == static_cast<int>(points.size()));
+    REQUIRE(result.rmse_iv_pp < 0.05);           // sub-0.05-percentage-point fit to the smile
+    REQUIRE(result.rmse_relative_price < 0.005);  // sub-0.5% price fit
+
+    // v0 and rho ARE identifiable from a single expiry (see comment
+    // above) and should come back close to the ground truth.
+    REQUIRE(result.params.v0 == Catch::Approx(truth.v0).epsilon(0.05));
+    REQUIRE(result.params.rho == Catch::Approx(truth.rho).epsilon(0.05));
+}
+
+TEST_CASE("Heston calibrates to the real Deribit BTC chain with a competitive fit",
+          "[.manual][heston][calibration][real_data]") {
+    // Calibrates to a single expiry slice of the real, committed Deribit
+    // snapshot -- the nearest-to-90-day expiry with reasonable liquidity
+    // -- restricted to a moneyness band of [0.7, 1.4]. That restriction
+    // is a deliberate, documented choice, not a hidden filter to make the
+    // numbers look better: very deep ITM/OTM contracts on the real chain
+    // have tiny open interest and wide effective spreads (the mark_price
+    // is thinly supported), and because the calibration objective is a
+    // *relative* price error (see calibrate_heston's header comment),
+    // those thin far-wing quotes get outsized weight in the objective
+    // relative to how much genuine smile information they carry --
+    // pulling the fit toward noise instead of signal. Real trading desks
+    // apply the same kind of liquidity/moneyness filter before
+    // calibrating for exactly this reason.
+    auto all_points = deriv::build_vol_surface_from_snapshot("data/btc_chain_snapshot.json", 2026, 9, 17);
+    REQUIRE(all_points.size() > 500);  // sanity check the snapshot loaded
+
+    double target_T = 90.0 / 365.0;
+    double chosen_key = -1.0;
+    {
+        std::vector<std::pair<double, int>> expiry_counts;
+        for (const auto& p : all_points) {
+            double key = std::round(p.time_to_expiry * 3650.0) / 3650.0;  // bucket to ~0.1 day
+            bool found = false;
+            for (auto& kv : expiry_counts) {
+                if (std::abs(kv.first - key) < 1e-9) {
+                    kv.second++;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) expiry_counts.push_back({key, 1});
+        }
+        double best_dist = 1e18;
+        for (const auto& kv : expiry_counts) {
+            if (kv.second < 10) continue;  // need enough contracts to calibrate against
+            double dist = std::abs(kv.first - target_T);
+            if (dist < best_dist) {
+                best_dist = dist;
+                chosen_key = kv.first;
+            }
+        }
+    }
+    REQUIRE(chosen_key > 0.0);
+
+    std::vector<deriv::VolSurfacePoint> slice;
+    double spot = 0.0, r = 0.0;
+    for (const auto& p : all_points) {
+        double key = std::round(p.time_to_expiry * 3650.0) / 3650.0;
+        if (std::abs(key - chosen_key) < 1e-9 && p.converged && p.moneyness > 0.7 && p.moneyness < 1.4) {
+            slice.push_back(p);
+            spot = p.underlying_price;
+            r = p.risk_free_rate;
+        }
+    }
+    REQUIRE(slice.size() > 20);
+
+    double atm_iv = 0.6;
+    double best_moneyness_dist = 1e18;
+    for (const auto& p : slice) {
+        double dist = std::abs(p.moneyness - 1.0);
+        if (dist < best_moneyness_dist) {
+            best_moneyness_dist = dist;
+            atm_iv = p.solved_iv;
+        }
+    }
+
+    deriv::HestonParams guess{atm_iv * atm_iv, 2.0, atm_iv * atm_iv, 0.7, -0.5};
+    // regularization_weight=0.001 matches tools/calibrate_heston.cpp (the
+    // program that actually feeds the live demo) -- see its comment, and
+    // calibrate_heston's header comment, for why: kappa/theta aren't
+    // separately identifiable from one expiry, and this keeps the fit
+    // out of the implausible-but-technically-valid corner of parameter
+    // space an unregularized fit was observed to find.
+    deriv::HestonCalibrationResult result = deriv::calibrate_heston(slice, spot, r, guess, 0.001);
+
+    WARN("Expiry: " << chosen_key * 365.0 << " days, " << slice.size() << " contracts in [0.7, 1.4] moneyness");
+    WARN("Calibrated: v0=" << result.params.v0 << " kappa=" << result.params.kappa
+                            << " theta=" << result.params.theta << " xi=" << result.params.xi
+                            << " rho=" << result.params.rho);
+    WARN("Fit quality: rmse_iv_pp=" << result.rmse_iv_pp
+                                     << ", rmse_relative_price=" << result.rmse_relative_price);
+
+    REQUIRE(result.converged);
+    // A single flat vol (Phase 8's headline result) averages ~1.9
+    // percentage points from Deribit's own reported IV across the whole
+    // chain. Heston, with 5 free parameters fit to one expiry's actual
+    // smile shape, should comfortably beat that on its own slice --
+    // generously bounded at 1.0pp so this doesn't become flaky on a
+    // future snapshot with a different real smile shape, while still
+    // catching an actual calibration regression (a broken fit here lands
+    // at several percentage points or fails to converge at all, not
+    // hovers just above 1.0).
+    REQUIRE(result.rmse_iv_pp < 1.0);
 }

@@ -1,0 +1,13 @@
+{
+  "expiry_days": 99.0,
+  "spot": 77463.74,
+  "contracts_used": 66,
+  "converged": true,
+  "v0": 0.159425,
+  "kappa": 1.829505,
+  "theta": 0.134505,
+  "xi": 1.280247,
+  "rho": -0.194560,
+  "rmse_iv_pp": 0.4292,
+  "rmse_relative_price": 0.031120
+}

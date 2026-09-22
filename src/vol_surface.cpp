@@ -135,6 +135,9 @@ std::vector<VolSurfacePoint> build_vol_surface_from_snapshot(const std::string& 
         point.market_iv_reported = mark_iv_percent / 100.0;
         point.solved_iv = iv.vol;
         point.converged = iv.converged;
+        point.underlying_price = underlying_price;
+        point.market_price_usd = market_price_usd;
+        point.risk_free_rate = r;
         points.push_back(point);
     }
 

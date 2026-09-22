@@ -74,14 +74,22 @@ jobs:
           print(json.dumps(stats, indent=2))
           PYEOF
 
+      - name: Calibrate Heston to real market data
+        run: |
+          g++ -std=c++20 -O2 -I include \
+            tools/calibrate_heston.cpp src/heston.cpp src/heston_calibration.cpp src/vol_surface.cpp src/implied_vol.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp \
+            -o build/calibrate_heston
+          ./build/calibrate_heston > docs/heston_calibration.json
+          cat docs/heston_calibration.json
+
       - name: Commit rebuilt assets if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/deriv_engine.js docs/stats.json
+          git add docs/deriv_engine.js docs/stats.json docs/heston_calibration.json
           if ! git diff --cached --quiet; then
             git commit -m "chore: rebuild WASM demo and refresh live stats [skip ci]"
             git push
           else
-            echo "No changes to docs/deriv_engine.js or docs/stats.json — skipping commit"
+            echo "No changes to docs/deriv_engine.js, docs/stats.json, or docs/heston_calibration.json — skipping commit"
           fi
