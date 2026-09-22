@@ -590,6 +590,104 @@ TEST_CASE("Implied vol solver recovers known volatility from its own price", "[i
     REQUIRE(result.vol == Catch::Approx(0.2).epsilon(0.0001));
 }
 
+TEST_CASE("Implied vol solver recovers known vol across moneyness, maturity, and vol regimes",
+          "[implied_vol][property]") {
+    // Each scenario: generate a price from a KNOWN vol via Black-Scholes
+    // (ground truth, not market data), then check the solver recovers
+    // that exact vol. Unlike the single ATM case below, this sweeps
+    // moneyness, time-to-expiry, and vol level together, so a change
+    // that only breaks convergence in one corner of the parameter space
+    // (e.g. long-dated, or very high vol) can't slip through on the
+    // strength of the ATM case alone. All scenarios here have healthy
+    // vega (checked independently) -- they exercise the normal
+    // Newton-Raphson path, not the bisection fallback (see the
+    // dedicated bisection test below for that).
+    struct Scenario {
+        double spot, strike, T, true_vol;
+        deriv::OptionType type;
+        const char* label;
+    };
+
+    std::vector<Scenario> scenarios = {
+        {100.0, 100.0, 1.0, 0.20, deriv::OptionType::Call, "ATM, 1yr, 20% vol (baseline)"},
+        {100.0, 100.0, 1.0 / 365.0, 0.20, deriv::OptionType::Call, "ATM, 1-day, 20% vol"},
+        {100.0, 130.0, 1.0, 0.60, deriv::OptionType::Call, "30% OTM call, 1yr, 60% vol"},
+        {100.0, 70.0, 1.0, 0.60, deriv::OptionType::Put, "30% OTM put, 1yr, 60% vol"},
+        {100.0, 100.0, 3.0, 0.05, deriv::OptionType::Call, "ATM, 3yr, very low 5% vol"},
+        {100.0, 100.0, 3.0, 1.50, deriv::OptionType::Call, "ATM, 3yr, extreme 150% vol"},
+        {100000.0, 120000.0, 90.0 / 365.0, 0.80, deriv::OptionType::Call, "BTC 20% OTM call, 90d, 80% vol"},
+        {100000.0, 80000.0, 90.0 / 365.0, 0.80, deriv::OptionType::Put, "BTC 20% OTM put, 90d, 80% vol"},
+    };
+
+    for (const auto& s : scenarios) {
+        INFO(s.label);
+
+        deriv::MarketData market_with_vol{s.spot, 0.05, 0.0, s.true_vol};
+        deriv::EuropeanOption option{s.strike, s.T, s.type};
+        double known_price = deriv::black_scholes_price(option, market_with_vol);
+
+        deriv::MarketData market_without_vol{s.spot, 0.05, 0.0, 0.0};
+        deriv::ImpliedVolResult result = deriv::implied_volatility(option, market_without_vol, known_price);
+
+        REQUIRE(result.converged);
+        REQUIRE(result.vol == Catch::Approx(s.true_vol).epsilon(0.001));
+    }
+}
+
+TEST_CASE("Implied vol solver's bisection fallback converges (but honestly can't recover the exact "
+          "vol) when vega underflows",
+          "[implied_vol][edge_case][bisection]") {
+    // A deep ITM BTC call one day from expiry: the option is nowhere
+    // near worthless (price ~= intrinsic value, $60,005) but vega
+    // underflows to effectively zero (checked below, ~1.6e-182) because
+    // there's almost no time value left to be sensitive to vol. This is
+    // exactly the case the bisection fallback in implied_volatility()
+    // exists for -- Newton-Raphson can't take a step here since it
+    // would be dividing by ~0.
+    //
+    // This test originally asserted the fallback recovers the *exact*
+    // known vol -- that assertion was wrong, and failed when first
+    // written, catching a real finding: when vega has underflowed this
+    // far, the price is IDENTICAL to double-precision for any vol
+    // across an enormous range (verified: 1% to 200% vol all produce
+    // the exact same price here). No solver, however good, can recover
+    // a meaningful vol from price alone in this regime -- the price
+    // curve is flatter than the solver's own 1e-6 tolerance can
+    // resolve. So the honest, correct claim for bisection here is
+    // narrower: it finds *a* vol that reproduces the target price
+    // within tolerance (converged == true, matching the old behavior's
+    // outright non-convergence), not *the* vol that produced it. This
+    // mirrors exactly why the live site's own calibration footnote
+    // flags deep ITM/OTM, near-expiry contracts as unreliable for IV.
+    double spot = 100000.0;
+    double strike = 40000.0;
+    double T = 1.0 / 365.0;
+    double true_vol = 0.60;
+
+    deriv::MarketData market_with_vol{spot, 0.05, 0.0, true_vol};
+    deriv::EuropeanOption option{strike, T, deriv::OptionType::Call};
+
+    // Confirm the premise: vega really is small enough to force the
+    // fallback path, so this test keeps meaning what it says even if
+    // implied_vol.cpp's internal threshold changes later.
+    deriv::Greeks g = deriv::black_scholes_greeks(option, market_with_vol);
+    INFO("vega at this point: " << g.vega);
+    REQUIRE(std::abs(g.vega) < 1e-8);
+
+    double known_price = deriv::black_scholes_price(option, market_with_vol);
+    deriv::MarketData market_without_vol{spot, 0.05, 0.0, 0.0};
+    deriv::ImpliedVolResult result = deriv::implied_volatility(option, market_without_vol, known_price);
+
+    REQUIRE(result.converged);
+    REQUIRE(std::isfinite(result.vol));
+
+    // The recovered vol reproduces the target price -- that's the part
+    // bisection can actually guarantee here.
+    deriv::MarketData market_at_recovered{spot, 0.05, 0.0, result.vol};
+    double price_at_recovered = deriv::black_scholes_price(option, market_at_recovered);
+    REQUIRE(price_at_recovered == Catch::Approx(known_price).margin(1e-5));
+}
+
 TEST_CASE("Implied vol solver handles deep OTM gracefully (near-zero vega)", "[implied_vol][edge_case]") {
     deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
     deriv::EuropeanOption option{10000.0, 1.0, deriv::OptionType::Call};  // deep OTM, from Phase 1's own test
