@@ -15,6 +15,7 @@
 #include "deriv-engine/implied_vol.hpp"
 #include "deriv-engine/vol_surface.hpp"
 #include "deriv-engine/heston.hpp"
+#include "deriv-engine/heston_mc.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -915,4 +916,65 @@ TEST_CASE("Heston pricer stays finite when the Feller condition is violated", "[
     double price = deriv::heston_price(option, market, params);
     REQUIRE(std::isfinite(price));
     REQUIRE(price > 0.0);
+}
+
+TEST_CASE("Heston Monte Carlo (independent SDE simulation) agrees with the COS-method closed form",
+          "[heston][monte_carlo][property]") {
+    // heston.cpp's own header comment names two independent correctness
+    // checks for the pricer: the deterministic-variance limit against
+    // Black-Scholes (see the property test above), and an actual Monte
+    // Carlo simulation of the Heston SDEs agreeing with the closed-form
+    // COS price. This is that second check, finally implemented.
+    //
+    // It matters precisely because it's a DIFFERENT kind of check than
+    // everything else in this file: every other Heston test exercises
+    // heston_log_return_cf() and the COS summation -- if those share a
+    // bug (e.g. a sign convention both heston_price() and a hypothetical
+    // wrong derivation would agree on), no amount of testing heston.cpp
+    // against itself would catch it. heston_monte_carlo_price() shares
+    // NONE of that code: it simulates dS and dv directly via full-
+    // truncation Euler (see heston_mc.hpp) and prices by discounted
+    // average payoff. Agreement between the two is real evidence the CF
+    // derivation matches the model it's supposed to be the CF of.
+    //
+    // Path/step counts (40,000 paths x 100 steps, antithetic) and the
+    // fixed seed were chosen empirically: this combination keeps the
+    // observed COS-vs-MC gap within about 1 standard error across many
+    // seeds and scenarios (checked manually, not asserted here, since
+    // that would just be re-deriving the CLT) while running in well
+    // under a second per case. The margin below (5 standard errors) is
+    // deliberately generous -- under 1e-6 false-failure probability for
+    // a correctly-implemented pricer -- so this test fails only for a
+    // real regression, not sampling noise.
+    struct Scenario {
+        double spot, strike, T;
+        deriv::HestonParams heston;
+        deriv::OptionType type;
+        const char* label;
+    };
+
+    std::vector<Scenario> scenarios = {
+        {100.0, 100.0, 1.0, {0.04, 2.0, 0.04, 0.5, -0.5}, deriv::OptionType::Call, "ATM, 1yr, moderate vol-of-vol"},
+        {100000.0, 120000.0, 90.0 / 365.0, {0.64, 1.5, 0.64, 0.9, -0.6}, deriv::OptionType::Call,
+         "BTC-like, 90d, high vol-of-vol"},
+        {100.0, 90.0, 2.0, {0.09, 3.0, 0.16, 0.3, 0.4}, deriv::OptionType::Put,
+         "positive rho, v0 != theta, 2yr put"},
+        {100.0, 100.0, 0.25, {0.25, 4.0, 0.25, 1.2, -0.7}, deriv::OptionType::Call,
+         "short-dated, extreme vol-of-vol"},
+    };
+
+    for (const auto& s : scenarios) {
+        INFO(s.label);
+
+        deriv::MarketData market{s.spot, 0.05, 0.0, 0.0};
+        deriv::EuropeanOption option{s.strike, s.T, s.type};
+
+        double cos_price = deriv::heston_price(option, market, s.heston);
+        deriv::MonteCarloResult mc =
+            deriv::heston_monte_carlo_price(option, market, s.heston, 40000, 100, true, 42);
+
+        INFO("COS price: " << cos_price << ", MC price: " << mc.price << " +/- " << mc.standard_error);
+        REQUIRE(mc.standard_error > 0.0);
+        REQUIRE(cos_price == Catch::Approx(mc.price).margin(5.0 * mc.standard_error));
+    }
 }
