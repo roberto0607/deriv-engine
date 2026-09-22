@@ -30,10 +30,10 @@ jobs:
           mkdir -p docs
           em++ -std=c++20 -O2 \
             -I include \
-            src/black_scholes.cpp src/greeks.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/implied_vol.cpp src/day_count.cpp \
+            src/black_scholes.cpp src/greeks.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/implied_vol.cpp src/day_count.cpp src/heston.cpp \
             wasm/wasm_bridge.cpp \
             -s MODULARIZE=1 -s EXPORT_NAME=createDerivEngine -s ENVIRONMENT=web \
-            -s EXPORTED_FUNCTIONS='["_bridge_bs_price","_bridge_bs_greeks","_bridge_tree_price_european","_bridge_tree_price_american","_bridge_mc_price","_bridge_implied_vol","_malloc","_free"]' \
+            -s EXPORTED_FUNCTIONS='["_bridge_bs_price","_bridge_bs_greeks","_bridge_tree_price_european","_bridge_tree_price_american","_bridge_mc_price","_bridge_implied_vol","_bridge_heston_price","_malloc","_free"]' \
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s SINGLE_FILE=1 \
             -o docs/deriv_engine.js

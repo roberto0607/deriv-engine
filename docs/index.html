@@ -207,10 +207,11 @@
   .calc-run:hover{filter:brightness(1.08);}
   .calc-run:active{filter:brightness(0.95);}
   .calc-results{
-    display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);
+    display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);
     border:1px solid var(--border);border-radius:10px;overflow:hidden;
   }
-  @media (max-width:640px){ .calc-results{grid-template-columns:1fr;} }
+  @media (max-width:860px){ .calc-results{grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:480px){ .calc-results{grid-template-columns:1fr;} }
   .calc-result{background:var(--bg-inset);padding:16px;display:flex;flex-direction:column;gap:4px;}
   .calc-result .rlabel{font-family:var(--mono);font-size:11px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.04em;}
   .calc-result .rval{font-family:var(--mono);font-size:22px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;}
@@ -402,6 +403,7 @@
         <div class="calc-result"><div class="rlabel">Black-Scholes</div><div class="rval" id="res-bs">—</div><div class="rsub">closed-form, European</div></div>
         <div class="calc-result"><div class="rlabel">Binomial tree</div><div class="rval" id="res-tree">—</div><div class="rsub" id="res-tree-sub">500 steps</div></div>
         <div class="calc-result"><div class="rlabel">Monte Carlo</div><div class="rval" id="res-mc">—</div><div class="rsub" id="res-mc-sub">200,000 paths, seeded</div></div>
+        <div class="calc-result"><div class="rlabel">Heston</div><div class="rval" id="res-heston">—</div><div class="rsub">stochastic vol, COS method</div></div>
       </div>
 
       <div class="calc-greeks" id="calc-greeks">
@@ -508,6 +510,22 @@
     Module._free(mcPtr);
     document.getElementById('res-mc').textContent = fmtUSD(mcPrice);
     document.getElementById('res-mc-sub').textContent = '200,000 paths · SE ' + fmtNum(mcSE, 2);
+
+    // Heston (stochastic vol, COS method) — always European, like BS and MC.
+    // This calculator only exposes a single flat vol, not a full Heston
+    // parameter set, so v0/theta are derived from that input (variance =
+    // vol^2, flat term structure) and kappa/xi/rho use fixed illustrative
+    // values typical of a BTC-ish negative-skew smile. That's why this
+    // price differs from Black-Scholes even at the same "vol" input: the
+    // stochastic-vol dynamics (vol-of-vol, mean reversion, spot-vol
+    // correlation) change the option's fair value beyond what a single
+    // flat vol number captures -- that's the entire point of the model.
+    var hestonKappa = 2.0, hestonXi = 0.5, hestonRho = -0.6;
+    var heston = Module.ccall('bridge_heston_price', 'number',
+      ['number','number','number','number','number','number','number','number','number','number','number'],
+      [p.spot, p.rate, 0, p.strike, p.T, p.type,
+       p.vol * p.vol, hestonKappa, p.vol * p.vol, hestonXi, hestonRho]);
+    document.getElementById('res-heston').textContent = fmtUSD(heston);
 
     var note = document.getElementById('calc-note');
     if (p.style === 'american'){

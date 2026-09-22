@@ -10,6 +10,7 @@
 #include "deriv-engine/tree_pricer.hpp"
 #include "deriv-engine/monte_carlo.hpp"
 #include "deriv-engine/implied_vol.hpp"
+#include "deriv-engine/heston.hpp"
 
 #include <emscripten/emscripten.h>
 
@@ -105,6 +106,20 @@ void bridge_implied_vol(double spot, double rate, double div,
     out[0] = r.vol;
     out[1] = r.converged ? 1.0 : 0.0;
     out[2] = static_cast<double>(r.iterations);
+}
+
+// Heston stochastic-vol price via the COS method. type: 0 = call, 1 = put.
+// v0/theta are variances (vol^2), not vols -- callers (JS included) must
+// square a vol before passing it in here, matching HestonParams' own
+// convention (see heston.hpp).
+EMSCRIPTEN_KEEPALIVE
+double bridge_heston_price(double spot, double rate, double div,
+                            double strike, double T, int type,
+                            double v0, double kappa, double theta, double xi, double rho) {
+    HestonParams params{v0, kappa, theta, xi, rho};
+    // volatility is unused by heston_price -- Heston prices off params, not market.volatility.
+    return heston_price(make_euro(strike, T, type),
+                         make_market(spot, rate, div, 0.0), params);
 }
 
 }  // extern "C"
