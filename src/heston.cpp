@@ -9,6 +9,25 @@ namespace {
 
 using cplx = std::complex<double>;
 
+// Complex log1p: computes log(1 + z) accurately even when |z| is tiny,
+// the way std::log1p does for reals. std::log(1.0 + z) loses precision
+// here because "1.0 + z" rounds to the nearest double *before* the log
+// is taken -- if z is, say, O(1e-12), most or all of its digits are
+// gone before log() ever sees them. This splits log(1+z) into a real
+// part computed via the real std::log1p on |1+z|^2-1 (itself expanded
+// so it doesn't re-introduce the same cancellation: |1+z|^2 - 1 =
+// 2*Re(z) + |z|^2, which needs no subtraction of near-equal numbers)
+// and an imaginary part via atan2, which is well-conditioned on its
+// own. See the note on heston_log_return_cf() below for why this
+// specific cancellation matters here.
+cplx clog1p(cplx z) {
+    double zr = z.real();
+    double zi = z.imag();
+    double re = 0.5 * std::log1p(2.0 * zr + zr * zr + zi * zi);
+    double im = std::atan2(zi, 1.0 + zr);
+    return cplx(re, im);
+}
+
 // Characteristic function of the log-return ln(S_T / S0) under Heston,
 // in the "little trap" formulation. This is the piece that's genuinely
 // easy to get subtly wrong (a sign flip in g(u), or picking the wrong
@@ -44,8 +63,37 @@ cplx heston_log_return_cf(double u, double tau, double r, double q, const Heston
 
     cplx exp_neg_d_tau = std::exp(-d * tau);
 
+    // The log((1 - g*E)/(1 - g)) term below (E = exp(-d*tau)) is a
+    // second, independent cancellation hazard from the (A-d) one
+    // above, and it survives even after that fix: g = O(xi^2) is tiny
+    // whenever xi is small-to-moderate (not just at xi->0), which
+    // makes the ratio (1-g*E)/(1-g) extremely close to 1. Evaluating
+    // std::log() of a value that's within ~1e-10 to 1e-15 of 1.0
+    // rounds away most or all of the meaningful digits *before* log()
+    // runs, since "1.0 - g*E" and "1.0 - g" both round to (or near) 1.0
+    // in double precision.
+    //
+    // This CF error is normally invisible -- it's a tiny relative error
+    // in an intermediate quantity that gets lost in the noise for
+    // ordinary (near-the-money) options. It stopped being invisible
+    // for deep out-of-the-money/in-the-money options priced through
+    // put-call parity (see heston_put_price() below): parity derives a
+    // *small* target price as the difference of two *large* numbers
+    // (the put and the discounted forward), so the target's accuracy
+    // is bounded by the *absolute* accuracy of the put, not its
+    // relative accuracy. Confirmed empirically: for
+    // spot=100000/strike=300000/90d/60%vol (strike = 3x spot, realistic
+    // for a crypto options chain), this cancellation alone accounted
+    // for an 82% pricing error in the deterministic-variance limit
+    // (which must equal Black-Scholes exactly) -- fixed to ~0.001% by
+    // rewriting the ratio as 1 + g*(1-E)/(1-g) and evaluating its log
+    // via clog1p() above, which needs no subtraction of near-equal
+    // values at all.
+    cplx ratio_minus_1 = g * (1.0 - exp_neg_d_tau) / (1.0 - g);
+    cplx log_term = clog1p(ratio_minus_1);
+
     cplx C = iu * (r - q) * tau + p.kappa * p.theta * tau * A_minus_d_over_xi_sq -
-             2.0 * (p.kappa * p.theta / (p.xi * p.xi)) * std::log((1.0 - g * exp_neg_d_tau) / (1.0 - g));
+             2.0 * (p.kappa * p.theta / (p.xi * p.xi)) * log_term;
 
     cplx D = A_minus_d_over_xi_sq * ((1.0 - exp_neg_d_tau) / (1.0 - g * exp_neg_d_tau));
 

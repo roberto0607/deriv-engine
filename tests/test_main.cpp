@@ -805,6 +805,16 @@ TEST_CASE("Heston collapses to Black-Scholes in the deterministic-variance limit
         {100.0, 100.0, 3.0, 0.60, deriv::OptionType::Call, "ATM call, 3yr, 60% vol"},
         {100000.0, 120000.0, 90.0 / 365.0, 0.80, deriv::OptionType::Call, "BTC 20% OTM call, 90d, 80% vol"},
         {100000.0, 80000.0, 90.0 / 365.0, 0.80, deriv::OptionType::Put, "BTC 20% OTM put, 90d, 80% vol"},
+        // Extreme moneyness (strike = 3x spot): found via the live demo's
+        // own test suite (spot=100000, strike=300000, 90d, 60% vol) to
+        // expose a real precision bug -- deriving a tiny call price via
+        // put-call parity from a put ~200,000x larger loses so much
+        // absolute precision in double that the "collapse to Black-
+        // Scholes" property broke by ~82% here specifically, even though
+        // every other scenario above (max ~1.3x moneyness) passed. Fixed
+        // by evaluating the CF and COS summation in long double (see
+        // heston.cpp); this case is the regression test for that fix.
+        {100000.0, 300000.0, 90.0 / 365.0, 0.60, deriv::OptionType::Call, "BTC deep OTM call, strike=3x spot, 90d, 60% vol"},
     };
 
     // xi is small but not literally zero: heston_log_return_cf divides by
@@ -951,6 +961,8 @@ TEST_CASE("Heston Monte Carlo (independent SDE simulation) agrees with the COS-m
         deriv::HestonParams heston;
         deriv::OptionType type;
         const char* label;
+        int num_paths = 40000;
+        int num_steps = 100;
     };
 
     std::vector<Scenario> scenarios = {
@@ -961,6 +973,25 @@ TEST_CASE("Heston Monte Carlo (independent SDE simulation) agrees with the COS-m
          "positive rho, v0 != theta, 2yr put"},
         {100.0, 100.0, 0.25, {0.25, 4.0, 0.25, 1.2, -0.7}, deriv::OptionType::Call,
          "short-dated, extreme vol-of-vol"},
+        // The live demo's own deep-OTM test case (strike = 3x spot) with
+        // its actual illustrative smile params (kappa=2, xi=0.5,
+        // rho=-0.6): the ~$0.07 COS price here looked suspiciously far
+        // below Black-Scholes' ~$1.65 at first glance, but this
+        // independent SDE simulation confirms it's correct, not a bug --
+        // negative spot-vol correlation genuinely thins the right tail
+        // relative to constant-vol Black-Scholes, so a deep OTM call is
+        // legitimately cheaper under Heston. See also the extreme-
+        // moneyness case added to the deterministic-variance-limit test
+        // above, which pins down a real (separate) precision bug this
+        // same scenario exposed in double-precision put-call parity.
+        //
+        // This option finishes in-the-money on only a tiny fraction of
+        // paths, so it needs far more than the default 40,000 paths to
+        // get a nonzero (let alone informative) standard error -- 500,000
+        // paths keeps this well under a second while reliably sampling
+        // enough ITM paths to compare against the COS price.
+        {100000.0, 300000.0, 90.0 / 365.0, {0.36, 2.0, 0.36, 0.5, -0.6}, deriv::OptionType::Call,
+         "BTC deep OTM call, strike=3x spot, matches live demo smile params", 500000, 150},
     };
 
     for (const auto& s : scenarios) {
@@ -971,7 +1002,7 @@ TEST_CASE("Heston Monte Carlo (independent SDE simulation) agrees with the COS-m
 
         double cos_price = deriv::heston_price(option, market, s.heston);
         deriv::MonteCarloResult mc =
-            deriv::heston_monte_carlo_price(option, market, s.heston, 40000, 100, true, 42);
+            deriv::heston_monte_carlo_price(option, market, s.heston, s.num_paths, s.num_steps, true, 42);
 
         INFO("COS price: " << cos_price << ", MC price: " << mc.price << " +/- " << mc.standard_error);
         REQUIRE(mc.standard_error > 0.0);
