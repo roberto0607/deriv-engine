@@ -719,3 +719,110 @@ replacing the binomial one: showing two independently-derived methods
 agree is itself part of this project's correctness evidence (see
 Validated against, above), and that evidence is weaker with only one
 tree in the picture.
+
+---
+
+## Phase 11 — Second-order AAD (gamma) (done)
+
+**What was built:**
+- `Dual` (`dual.hpp`): a forward-mode dual number (`val + dot*eps`,
+  `eps^2=0`), with arithmetic (`+ - * /`) and the two special
+  functions (`dual_exp`, `dual_sqrt`) the Monte Carlo path/Black-
+  Scholes formula below need
+- `Tape2`/`ADouble2` (`tape2.hpp`/`adouble2.hpp`): a second, fully
+  isolated sibling of the original `Tape`/`ADouble` (Phase 4) — same
+  structure, same backward-walk logic, but every value and every local
+  partial derivative is a `Dual` instead of a plain `double`. This is
+  "forward-over-reverse" AD: seed ONE input's `Dual.dot = 1.0` (the
+  direction to differentiate twice in), run the ordinary reverse-mode
+  backward pass, and the resulting adjoint's own `.dot` component is
+  the second derivative — computed exactly, in the same single pass,
+  no finite differencing anywhere. Also gained `ad2_log` and
+  `ad2_norm_cdf` (the standard normal CDF as a special function with a
+  hand-supplied derivative, `N'(x) = phi(x)`, mirroring how `ad_exp`/
+  `ad_sqrt` already worked in the original tape) — needed to run this
+  machinery through the Black-Scholes formula itself, not just simple
+  arithmetic
+- Kept entirely separate from the original `Tape`/`ADouble`
+  (duplicated rather than templated) so this new, less-battle-tested
+  machinery could not silently change any already-shipped, already-
+  tested first-order Greek if it had a bug
+- Two real uses, wired up deliberately to show contrasting outcomes:
+  `black_scholes_greeks_via_ad2()` (gamma on the smooth closed-form
+  formula) and `monte_carlo_gamma()` (gamma on a Monte Carlo path's
+  payoff) — see Validated against, below, for why these two land in
+  very different places
+
+**Validated against:**
+- Hand-computed toy examples FIRST, before any real pricing code
+  touched this machinery — same discipline Phase 4 used for the
+  original tape (`y = a*b + c`). Checked `f(x)=x^3`, `f(x)=1/x`,
+  `f(x)=exp(x)`, `f(x)=sqrt(x)`, `f(x)=log(x)`, `f(x)=N(x)` (the
+  normal CDF), and a two-variable case `f(x,y)=x^2*y+e^x` — all first
+  AND second derivatives matched their closed-form analytical values
+  to machine precision (~1e-16), not just a statistical tolerance
+- `black_scholes_greeks_via_ad2()`'s gamma matches
+  `black_scholes_greeks()`'s independently-computed analytical gamma
+  to ~1e-9 across 6 scenarios (ATM, OTM with a dividend, deep ITM,
+  BTC-scale short-dated, and right at the edge of expiry) — the
+  formula is smooth in spot, so this is exact agreement, not a
+  statistical check
+- `monte_carlo_gamma()`'s delta (a first-order quantity, computed on
+  the same Dual-valued tape as an incidental byproduct) cross-checked
+  against `black_scholes_greeks()`'s analytical delta, confirming the
+  new machinery's ordinary first-order output is correct even where
+  its second-order output (gamma) isn't usable — see the finding below
+
+**The real finding — pathwise AAD gamma is exactly zero for Monte
+Carlo, and that's not a bug:**
+Running the exact same forward-over-reverse technique through a Monte
+Carlo path's payoff instead of the smooth Black-Scholes formula
+returns gamma = 0.0 — not approximately zero, not noisy-near-zero,
+exactly `0.0`, on every run, at every path count tested. This is the
+real, well-documented reason pathwise differentiation (the technique
+Phase 4's `monte_carlo_greeks` already uses successfully for delta,
+vega, theta, rho) does not extend to gamma. A single simulated path's
+payoff, `max(S_T - K, 0)`, is a PIECEWISE LINEAR function of spot:
+along any one path it's either exactly `S_T - K` (slope 1, zero
+curvature) or exactly `0` (zero everything) — its second derivative is
+identically zero everywhere except exactly at the kink point
+(`S_T = K`), which has probability zero of ever being sampled under
+continuous GBM. First-order pathwise differentiation works because the
+payoff function itself is continuous even though it has a kink (Phase
+4 already established this: "branching on the plain value, valid since
+the kink has zero probability of being hit exactly"); second-order
+differentiation of that same kinked function is fundamentally
+different, because differentiating twice asks a question about local
+curvature that a piecewise-LINEAR function structurally cannot answer
+away from its kink. A working Monte Carlo gamma estimator exists in
+the literature (the likelihood-ratio/score-function method, which
+differentiates the probability density instead of the payoff, sidestepping
+this problem entirely) but is a different technique, not an extension
+of this one — deliberately out of scope here, and documented as a real
+finding rather than silently shipping a `monte_carlo_gamma()` that
+always returns zero without explaining why.
+
+**Defend this:**
+Can explain forward-over-reverse AD mechanically: layering a forward-
+mode dual number underneath a reverse-mode tape computes, in the SAME
+backward pass that produces first derivatives, a Hessian-vector
+product — the second derivative in whatever single direction was
+seeded — without needing to literally differentiate the backward pass
+by hand (a real, separate undertaking Phase 4 correctly identified as
+"genuinely larger"). Can explain precisely why this was built as a
+fully separate `Tape2`/`ADouble2` rather than templating the original
+`Tape`/`ADouble`: isolating blast radius, so a bug in newer, less-
+proven machinery can't silently corrupt an already-shipped, already-
+tested Greek. Can explain, with the actual numbers, why gamma works to
+near machine precision on the Black-Scholes formula (smooth function,
+no kink) and returns exactly zero on a Monte Carlo path (piecewise-
+linear payoff, kink) — and can state clearly that this is a structural
+fact about pathwise differentiation, not a limitation of this specific
+implementation, connecting it to the general principle: an estimator
+valid for one order of differentiation isn't automatically valid for
+the next order up, and checking that (rather than assuming it) is
+what this phase actually did. Can name the real fix (likelihood-ratio
+method) and explain in one sentence why it works where pathwise
+doesn't: it differentiates the path's PROBABILITY of occurring, not
+the payoff's VALUE, so it never needs the payoff itself to be twice
+differentiable.

@@ -159,17 +159,38 @@ everywhere else; a nonzero seed forces reproducible draws). After the
 fix, bump-delta (0.6363) and AAD-delta (0.6376) agree closely, as
 expected.
 
-**Gamma — deliberately deferred:**
+**Gamma via AAD — deferred, then built (Phase 11):**
 Gamma is a second-order derivative (∂²price/∂S², the derivative of
-delta), which the current first-order reverse-mode tape cannot
-compute directly — it would require a genuinely more complex "tape of
-tapes" structure to differentiate the backward pass itself. Given
-remaining project scope (Longstaff-Schwartz, PDE solver, hedging
-simulation, calibration), this was judged lower-value than building
-that additional complexity: it would add depth to a technique already
-proven working (AAD) rather than covering new ground. Gamma remains
-available via the exact analytical Black-Scholes formula (Phase 1)
-for any downstream use, such as the delta-hedging simulation.
+delta), which the first-order reverse-mode tape above cannot compute
+directly. At the time of Phase 4, this was deliberately deferred:
+computing it would need a genuinely more complex "tape of tapes"
+structure to differentiate the backward pass itself, and given
+remaining project scope at that point (Longstaff-Schwartz, PDE
+solver, hedging simulation, calibration), that was judged lower-value
+than covering new ground. Gamma remained available via the exact
+analytical Black-Scholes formula (Phase 1) for any downstream use,
+such as the delta-hedging simulation.
+
+Phase 11 revisited this and built it: `dual.hpp`/`tape2.hpp`/
+`adouble2.hpp` implement forward-over-reverse AD (a genuinely separate,
+isolated tape, not a modification of the original one), which does
+compute a Hessian-vector product exactly in one backward pass. Applied
+to the smooth Black-Scholes formula, it recovers analytical gamma to
+~1e-9. Applied to a Monte Carlo path's payoff — the more natural place
+to want it, since that's what the rest of this project's AAD work
+(monte_carlo_greeks) targets — it returns exactly zero, because a
+single path's payoff is piecewise LINEAR in spot (either S_T-K or 0),
+and the second derivative of a piecewise-linear function is zero
+almost everywhere. This isn't a bug in the new tape (verified
+independently against hand-computed toy derivatives first, the same
+way the original tape was in Phase 4); it's the real, well-known
+reason pathwise differentiation doesn't extend to gamma the way it
+does to delta. A working Monte Carlo gamma estimator needs a
+different technique (e.g. the likelihood-ratio/score-function method,
+or a smoothed payoff) — left out of scope here, documented rather
+than silently shipped as a gamma that's always zero. See
+`docs/phase-log.md` Phase 11 and `tests/test_main.cpp`'s `[gamma]`
+tests.
 
 ## Delta-hedging simulation
 

@@ -52,6 +52,7 @@ engine's Heston model is calibrated to reproduce.
 | Trinomial tree | A second, independently-derived lattice (3 branches/node instead of 2) | Agrees with the binomial tree at high step counts; measured (not assumed) ~5-10% lower error at equal step counts |
 | Monte Carlo | Simulation-based pricing, variance reduction | Converges to Black-Scholes; antithetic + control variates give a measured 6.97x variance reduction |
 | Reverse-mode AAD | Hand-built automatic differentiation | Matches analytical Greeks; benchmarked against bump-and-revalue |
+| Second-order AAD (gamma) | Forward-over-reverse AD (a second, independent tape) for gamma, not finite differences | Matches analytical Black-Scholes gamma to ~1e-9 on a smooth pricing formula; honestly documented failure mode on Monte Carlo's kinked payoff (see below) |
 | Delta-hedging simulation | Realized P&L vs. theoretical price | Mean PnL ≈ 0 across 2000 simulated paths; hedging error shrinks ~4.5x from monthly to daily rebalancing |
 | Longstaff-Schwartz | American option pricing via Monte Carlo | Converges to the binomial tree on two independent parameter sets |
 | Crank-Nicolson PDE | Direct numerical solution of the Black-Scholes PDE | Converges to Black-Scholes; explicit-scheme instability demonstrated directly (diverges to -10^22 under the same conditions CN stays accurate) |
@@ -77,10 +78,23 @@ evidence for this engine.
   AAD was measured to be *slower* than naive bump-and-revalue — the
   reasoning for why, and where the actual crossover point is, is
   documented in `docs/numerics.md` rather than glossed over.
-- **Deliberate scope decisions, not gaps.** Discrete dividends,
-  trinomial trees, and second-order AAD (gamma) were all considered
-  and explicitly deferred, with the reasoning written down — see
-  `docs/numerics.md`.
+- **Deliberate scope decisions, not gaps.** Discrete dividends and
+  exotic payoffs (Asian, Barrier) are considered and explicitly
+  deferred, with the reasoning written down — see `docs/numerics.md`.
+  Trinomial trees and second-order AAD (gamma) were deferred the same
+  way at first, then revisited and built (see below and the tree row
+  above) once the higher-priority phases were done.
+- **Gamma via AAD works on a smooth pricing formula, and honestly
+  doesn't on Monte Carlo.** Forward-over-reverse AD recovers Black-
+  Scholes gamma to ~1e-9 when applied to the closed-form formula. The
+  exact same technique applied to a Monte Carlo path's payoff gives
+  gamma = 0, every time — not a bug, but the well-known consequence of
+  differentiating a piecewise-linear (kinked) payoff twice: its second
+  derivative is a.e. zero except exactly at the kink, which has
+  probability zero of being sampled. A working Monte Carlo gamma
+  estimator needs a different technique entirely (e.g. the likelihood-
+  ratio method) — documented, not silently worked around. See
+  `docs/phase-log.md` Phase 11.
 - **Heston calibration is honest about non-identifiability.** kappa
   and theta aren't separately identifiable from a single expiry's
   smile — an unregularized fit converges to a valid but implausible

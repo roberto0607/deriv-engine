@@ -1,4 +1,5 @@
 #include "deriv-engine/greeks.hpp"
+#include "deriv-engine/adouble2.hpp"
 #include <cmath>
 
 namespace deriv {
@@ -74,6 +75,56 @@ Greeks black_scholes_greeks(const EuropeanOption& option, const MarketData& mark
     }
 
     return g;
+}
+
+GammaAD2Result black_scholes_greeks_via_ad2(const EuropeanOption& option, const MarketData& market) {
+    const double K = option.strike;
+    const double T = option.time_to_expiry;
+    const double r = market.risk_free_rate;
+    const double q = market.dividend_yield;
+    const double sigma = market.volatility;
+
+    // Same T<=0 boundary case as black_scholes_greeks -- gamma is 0
+    // right at/past expiry, and the formula below divides by
+    // sigma*sqrt(T), so this needs the same early return, not something
+    // the AD machinery should be asked to differentiate through.
+    if (T <= 1e-8) {
+        const bool call_itm = (option.type == OptionType::Call) && (market.spot > K);
+        const bool put_itm = (option.type == OptionType::Put) && (market.spot < K);
+        double intrinsic = std::max(option.type == OptionType::Call ? market.spot - K : K - market.spot, 0.0);
+        double delta = call_itm ? 1.0 : (put_itm ? -1.0 : 0.0);
+        return GammaAD2Result{intrinsic, delta, 0.0};
+    }
+
+    get_tape2().clear();
+
+    // Only S is seeded (dot=1.0): the one direction gamma is a second
+    // derivative in. Everything else is an ordinary (dot=0) leaf.
+    ADouble2 S(market.spot, /*seed_dot=*/1.0);
+    ADouble2 sigmaA(sigma);
+    ADouble2 rA(r);
+    ADouble2 qA(q);
+    ADouble2 TA(T);
+    ADouble2 KA(K);
+
+    ADouble2 sqrtT = ad2_sqrt(TA);
+    ADouble2 d1 = (ad2_log(S / KA) + (rA - qA + ADouble2(0.5) * sigmaA * sigmaA) * TA) / (sigmaA * sqrtT);
+    ADouble2 d2 = d1 - sigmaA * sqrtT;
+
+    ADouble2 disc_q = ad2_exp(-(qA * TA));
+    ADouble2 disc_r = ad2_exp(-(rA * TA));
+
+    ADouble2 price = (option.type == OptionType::Call)
+                          ? S * disc_q * ad2_norm_cdf(d1) - KA * disc_r * ad2_norm_cdf(d2)
+                          : KA * disc_r * ad2_norm_cdf(-d2) - S * disc_q * ad2_norm_cdf(-d1);
+
+    get_tape2().backward(price.idx);
+    auto& adj = get_tape2().adjoints;
+
+    // adj[S.idx].val = d(price)/dS = delta (ordinary first-order
+    // adjoint). adj[S.idx].dot = d(delta)/dS = gamma -- the forward-
+    // seeded tangent of that same adjoint, from this one backward pass.
+    return GammaAD2Result{price.value.val, adj[S.idx].val, adj[S.idx].dot};
 }
 
 }  // namespace deriv

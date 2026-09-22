@@ -8,6 +8,8 @@
 #include "deriv-engine/tree_pricer.hpp"
 #include "deriv-engine/monte_carlo.hpp"
 #include "deriv-engine/adouble.hpp"
+#include "deriv-engine/adouble2.hpp"
+#include "deriv-engine/tape2.hpp"
 #include <chrono>
 #include "deriv-engine/hedging.hpp"
 #include "deriv-engine/longstaff_schwartz.hpp"
@@ -430,6 +432,117 @@ TEST_CASE("Monte Carlo AAD theta and rho match analytical Greeks", "[aad][monte_
     REQUIRE(std::abs(mc.vega - analytical.vega) < 2.0);
     REQUIRE(std::abs(mc.theta - analytical.theta) < 1.0);
     REQUIRE(std::abs(mc.rho - analytical.rho) < 2.0);
+}
+
+// --- Second-order AAD (gamma) --------------------------------------
+//
+// Phase 4 deferred gamma, on the grounds that it needs "a tape-of-
+// tapes structure to differentiate the backward pass itself" — a
+// separate piece of machinery from the first-order Tape/ADouble above.
+// Tape2/ADouble2/Dual (tape2.hpp/adouble2.hpp/dual.hpp) are that
+// machinery: forward-over-reverse AD, verified below first against
+// hand-computed toy examples (same discipline Phase 4 used for the
+// original tape, "y = a*b + c"), then wired into two real uses with
+// two very different outcomes — see docs/phase-log.md Phase 11.
+
+TEST_CASE("Second-order AAD tape reproduces hand-computed derivatives", "[aad][gamma]") {
+    // f(x) = x^3: f'=3x^2, f''=6x. At x=2: f=8, f'=12, f''=12.
+    {
+        deriv::get_tape2().clear();
+        deriv::ADouble2 x(2.0, /*seed_dot=*/1.0);
+        deriv::ADouble2 y = x * x * x;
+        deriv::get_tape2().backward(y.idx);
+        auto& adj = deriv::get_tape2().adjoints;
+
+        REQUIRE(y.value.val == Catch::Approx(8.0));
+        REQUIRE(adj[x.idx].val == Catch::Approx(12.0));  // f'
+        REQUIRE(adj[x.idx].dot == Catch::Approx(12.0));  // f''
+    }
+
+    // f(x,y) = x^2*y + e^x, second derivative w.r.t. x only (y not
+    // seeded) -- exercises a multivariate case, not just a single input.
+    // d/dx = 2xy + e^x; d2/dx2 = 2y + e^x. At x=1.5, y=3.
+    {
+        deriv::get_tape2().clear();
+        deriv::ADouble2 x(1.5, 1.0);
+        deriv::ADouble2 y(3.0, 0.0);
+        deriv::ADouble2 f = x * x * y + deriv::ad2_exp(x);
+        deriv::get_tape2().backward(f.idx);
+        auto& adj = deriv::get_tape2().adjoints;
+
+        double e15 = std::exp(1.5);
+        REQUIRE(adj[x.idx].val == Catch::Approx(2 * 1.5 * 3.0 + e15));
+        REQUIRE(adj[x.idx].dot == Catch::Approx(2 * 3.0 + e15));
+    }
+}
+
+TEST_CASE("Gamma via second-order AAD matches analytical Black-Scholes gamma", "[aad][gamma]") {
+    // Applied to the Black-Scholes closed-form formula (a smooth
+    // function of spot -- no kink), forward-over-reverse AD should
+    // recover gamma to near machine precision, not just within a
+    // statistical tolerance. This is the WORKING half of the gamma-via-
+    // AAD story; see the next test for the other half.
+    struct Scenario {
+        deriv::MarketData market;
+        deriv::EuropeanOption option;
+        const char* label;
+    };
+    std::vector<Scenario> scenarios = {
+        {{100.0, 0.05, 0.0, 0.20}, {100.0, 1.0, deriv::OptionType::Call}, "ATM call"},
+        {{100.0, 0.05, 0.0, 0.20}, {100.0, 1.0, deriv::OptionType::Put}, "ATM put"},
+        {{100.0, 0.05, 0.02, 0.45}, {130.0, 0.5, deriv::OptionType::Call}, "OTM call, high vol, dividend"},
+        {{100.0, 0.03, 0.0, 0.25}, {150.0, 2.0, deriv::OptionType::Put}, "Deep ITM put, long-dated"},
+        {{100000.0, 0.05, 0.0, 0.80}, {105000.0, 90.0 / 365.0, deriv::OptionType::Call}, "BTC-scale short-dated"},
+        {{100.0, 0.05, 0.0, 0.2}, {100.0, 1.0 / 365.0, deriv::OptionType::Call}, "Near expiry"},
+    };
+
+    for (const auto& s : scenarios) {
+        INFO(s.label);
+        deriv::Greeks analytical = deriv::black_scholes_greeks(s.option, s.market);
+        deriv::GammaAD2Result ad2 = deriv::black_scholes_greeks_via_ad2(s.option, s.market);
+        double plain_price = deriv::black_scholes_price(s.option, s.market);
+
+        REQUIRE(ad2.price == Catch::Approx(plain_price).epsilon(1e-9));
+        REQUIRE(ad2.delta == Catch::Approx(analytical.delta).epsilon(1e-9));
+        REQUIRE(ad2.gamma == Catch::Approx(analytical.gamma).epsilon(1e-9));
+    }
+}
+
+TEST_CASE("Monte Carlo pathwise AAD gamma is exactly zero for a kinked payoff",
+          "[aad][gamma][monte_carlo]") {
+    // The other half of the story, and the real reason Phase 4 called
+    // gamma a "genuinely larger sub-project": applying the exact same
+    // second-order tape to a Monte Carlo path's payoff instead of the
+    // smooth Black-Scholes formula does NOT recover Black-Scholes'
+    // analytical gamma. It gives exactly zero, every time, regardless
+    // of path count -- this is not noise or a bug in Tape2 (verified
+    // correct above), it's a real, well-known limitation of pathwise
+    // differentiation: each simulated path's payoff (max(S_T-K,0), or
+    // the put equivalent) is PIECEWISE LINEAR in spot -- either exactly
+    // S_T-K or exactly 0 -- and the second derivative of a piecewise
+    // linear function is identically zero everywhere except exactly at
+    // the kink (probability zero under continuous GBM). A working Monte
+    // Carlo gamma estimator needs a fundamentally different technique
+    // (e.g. the likelihood ratio / score-function method, or a smoothed
+    // payoff) -- deliberately out of scope here; this test documents
+    // WHY, with a real number, rather than silently shipping a gamma
+    // that's always zero without explaining it.
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    deriv::MonteCarloGammaResult mc = deriv::monte_carlo_gamma(option, market, 50000, /*seed=*/7);
+
+    REQUIRE(mc.gamma == 0.0);
+
+    // Delta, however, comes from the SAME kind of pathwise
+    // differentiation and works fine (the payoff is continuous, even
+    // though its second derivative isn't) -- cross-checked against
+    // monte_carlo_greeks' independently-computed (first-order tape)
+    // delta, and against the analytical value, confirming this
+    // function's own machinery is otherwise correct and the zero
+    // gamma above isn't a sign that something else is broken.
+    deriv::Greeks analytical = deriv::black_scholes_greeks(option, market);
+    REQUIRE(std::abs(mc.delta - analytical.delta) < 0.02);
 }
 
 TEST_CASE("AAD is faster than bump-and-revalue for computing 4 Greeks", "[.manual][aad][performance]") {

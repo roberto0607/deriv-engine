@@ -28,4 +28,20 @@ struct MonteCarloGreeksResult {
 MonteCarloGreeksResult monte_carlo_greeks(const EuropeanOption& option, const MarketData& market,
                                            int num_paths);
 
+struct MonteCarloGammaResult {
+    double price;
+    double delta;
+    double gamma;
+    double standard_error;
+};
+
+// Second-order AAD: gamma via forward-over-reverse automatic
+// differentiation (see adouble2.hpp/tape2.hpp), not finite differences.
+// Delta is recomputed here too (rather than reusing monte_carlo_greeks'
+// delta) as a same-tape consistency check -- see tests/test_main.cpp
+// and docs/phase-log.md Phase 11 for why that check matters and what
+// it's cross-validated against.
+MonteCarloGammaResult monte_carlo_gamma(const EuropeanOption& option, const MarketData& market,
+                                         int num_paths, unsigned int seed = 0);
+
 }  // namespace deriv
