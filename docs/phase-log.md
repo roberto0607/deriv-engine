@@ -494,3 +494,145 @@ walk through the non-convergence investigation end to end — not just
 (0.5 and 0.01) as direct evidence of which specific guard triggered
 for each case. Can explain why a snapshot-based approach was used
 instead of live API calls in tests.
+
+---
+
+## Phase 9 — Heston stochastic volatility (done)
+
+**What was built:**
+- `HestonParams` (v0, kappa, theta, xi, rho) and `heston_price()` —
+  European option pricing under Heston (1993) via the COS method
+  (Fang & Oosterlee, 2008): a truncated cosine-series expansion of the
+  terminal log-return density, built from the model's characteristic
+  function, evaluated in the numerically stable "little trap"
+  formulation (Albrecher, Mayer, Schoutens, Tistaert, 2007) rather
+  than the original 1993 formula, which suffers branch-cut
+  discontinuities in the principal complex log/sqrt as tau grows
+- Prices European puts directly (COS payoff coefficients integrated
+  over `[a, 0]`) and derives calls via put-call parity, rather than
+  pricing calls directly — a deliberate direction choice, not an
+  arbitrary one (see bug note below)
+- 256-term COS summation, truncation range `[a, b]` sized generously
+  from the model's own variance estimate rather than exact Heston
+  cumulants, so the series converges without needing error-prone
+  closed-form cumulant formulas transcribed from memory
+
+**Validated against:**
+- Deterministic-variance limit: with vol-of-vol xi forced to ~0, the
+  variance process has (almost) no randomness and Heston must
+  degenerate exactly to Black-Scholes with sigma = sqrt(v0) — checked
+  across 9 scenarios spanning ATM/OTM, short/long-dated, and BTC-scale
+  parameters, catching any sign error in the characteristic function
+  that a numerical-stability artifact alone wouldn't reveal
+- Independent Monte Carlo cross-check: full-truncation Euler
+  simulation of the actual Heston SDEs (`dS`, `dv` stepped directly,
+  not the closed-form CF) agrees with the COS-method price within
+  statistical tolerance — confirms the closed-form isn't just
+  internally consistent but actually solves the model it claims to
+  price
+- Heston's own put-call parity relation, checked independently of
+  Black-Scholes, across parameter sets that actually exercise
+  stochastic vol (nonzero xi and rho)
+- Monotonicity: call price increases with initial variance v0, holding
+  everything else fixed
+- Edge cases: reduces to intrinsic value as expiry approaches; stays
+  finite when the Feller condition (`2*kappa*theta > xi^2`) is
+  violated, which real BTC-calibrated parameters routinely do
+
+**Bugs found and fixed:**
+
+This model went through two real numerical bugs before the pricer was
+trustworthy across the full range of moneyness a real BTC options
+chain actually has. Both were found the same way: a discrepancy
+between Heston and Black-Scholes in the deterministic-variance limit,
+where the two *must* agree exactly, that was invisible near the money
+and only showed up far from it.
+
+1. **Catastrophic cancellation in the characteristic function's log
+   term (the real bug).** `heston_log_return_cf` computes a term
+   `log((1 - g*E) / (1 - g))` where `g` is O(xi^2) — tiny for any
+   small-to-moderate vol-of-vol, not just as xi→0. That makes the
+   ratio inside the log extremely close to 1.0, and `std::log(1.0 +
+   tiny)` loses most or all of its meaningful digits: `"1.0 - g*E"`
+   and `"1.0 - g"` both round to (or very near) 1.0 in double
+   precision *before* `log()` ever runs. This error is normally too
+   small to notice — a tiny relative error in an intermediate
+   quantity, lost in the noise for near-the-money options. It stopped
+   being invisible for far-from-the-money options priced through
+   put-call parity: parity derives a *small* target price as the
+   difference of two *large* numbers (the put and the discounted
+   forward), so the target's accuracy is bounded by the put's
+   *absolute* accuracy, not its relative accuracy. Concretely: at
+   spot=$100,000, strike=$300,000, 90 days, 60% vol (strike = 3x spot,
+   a realistic scenario for a crypto options chain, found via manual
+   testing of the live demo) this cancellation alone produced an 82%
+   pricing error in the deterministic-variance limit, which must equal
+   Black-Scholes exactly. **Fix:** rewrote the term as `1 +
+   g*(1-E)/(1-g)` and evaluated its log via a hand-built complex
+   `log1p` (`clog1p()` in `heston.cpp`) — the same technique
+   `std::log1p` uses for reals, splitting the real part into
+   `0.5*log1p(2*Re(z) + |z|^2)` (no subtraction of near-equal values)
+   and the imaginary part into `atan2(Im(z), 1+Re(z))`. Reduced the
+   error from 82% to ~0.001%, confirmed via the extreme-moneyness
+   regression case added to the deterministic-limit test.
+
+2. **A `long double` false start (not a fix — a mistake worth
+   documenting).** The first attempt at fixing bug #1 was to switch
+   `heston.cpp`'s complex type from `std::complex<double>` to
+   `std::complex<long double>`, reasoning that more bits of precision
+   would simply absorb the cancellation. This *appeared* to work: it
+   fixed the extreme-moneyness test in this project's Linux/x86
+   development sandbox, and even held up when cross-compiled to
+   WebAssembly via Emscripten (which gives `long double` full IEEE
+   quad precision). It was shipped on that evidence. It did not
+   actually fix anything: on Apple Silicon (ARM64) Macs, `long double`
+   is bit-for-bit identical to `double` — there's no extended-precision
+   hardware to use — so the "fix" was a complete no-op there. This was
+   only caught because the change was verified on the actual target
+   hardware afterward, which reproduced the *exact* same wrong value
+   (0.2907348679 instead of 1.6454796818) as before the "fix." The
+   real fix (`clog1p`, above) uses only ordinary `double` throughout
+   and is genuinely portable, because it fixes the *cancellation*
+   rather than trying to out-precision it. **Lesson documented,
+   deliberately, not smoothed over:** a numerical fix verified on one
+   platform (even two, if both happen to have the same underlying
+   float behavior) is not verified — `long double`'s width is
+   implementation-defined per the C++ standard, and x86-64 and ARM64
+   disagree on it in exactly the way that matters here. The fix that
+   shipped doesn't rely on any platform-specific float behavior.
+
+**Defend this:**
+Can explain the COS method mechanically: it expands the terminal
+log-return density as a truncated Fourier-cosine series on `[a, b]`,
+with coefficients recovered directly from the characteristic function
+via a cosine transform, avoiding the numerical Fourier inversion
+integral that naive characteristic-function pricing would otherwise
+need. Can explain why puts are priced directly and calls via parity,
+not the reverse: the call payoff's COS coefficients integrate over
+`[0, b]`, and `b` scales with total variance — for BTC-realistic
+vol/tenor combinations `b` routinely lands in the 8-20 range, making
+`exp(b)` astronomically large inside each coefficient, which an
+N-term sum then has to cancel back down to an O(spot) answer;
+observed failure mode was silently wrong prices (from -36% to +∞
+depending on truncation width), not a crash, confirmed independent of
+summation length (ruling out under-convergence as the cause). Puts
+integrate over `[a, 0]` instead, where `exp(0)=1` and `exp(a)` is
+tiny, so this instability doesn't arise regardless of truncation
+width. Can explain both cancellation bugs at the mechanism level, not
+just "floating point is hard": the `(A-d)` cancellation (an earlier,
+separately-fixed issue in the same characteristic function, resolved
+via the algebraic identity `A²-d² = -xi²(iu+u²)` so `(A-d)` is
+computed as a sum in the denominator rather than a literal
+difference) and the `log(1+tiny)` cancellation documented above are
+two *different* hazards in the same formula, both invisible near the
+money and both bounded by absolute, not relative, precision once
+routed through put-call parity. Can explain precisely why `long
+double` seemed to work and precisely why it didn't really: x86-64's
+80-bit extended format and Emscripten's IEEE-quad `long double` both
+happen to add real precision over `double`, while ARM64's ABI defines
+`long double` as identical to `double` — so a fix that works by
+adding unspecified extra bits is only ever accidentally portable. Can
+state, without hedging, that this was caught by testing on real
+target hardware, not by reasoning about the standard in advance — and
+that the actual fix doesn't depend on `long double`'s width being
+anything in particular, on any platform.

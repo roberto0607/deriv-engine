@@ -806,15 +806,21 @@ TEST_CASE("Heston collapses to Black-Scholes in the deterministic-variance limit
         {100.0, 100.0, 3.0, 0.60, deriv::OptionType::Call, "ATM call, 3yr, 60% vol"},
         {100000.0, 120000.0, 90.0 / 365.0, 0.80, deriv::OptionType::Call, "BTC 20% OTM call, 90d, 80% vol"},
         {100000.0, 80000.0, 90.0 / 365.0, 0.80, deriv::OptionType::Put, "BTC 20% OTM put, 90d, 80% vol"},
-        // Extreme moneyness (strike = 3x spot): found via the live demo's
-        // own test suite (spot=100000, strike=300000, 90d, 60% vol) to
+        // Extreme moneyness (strike = 3x spot): found via manual testing
+        // of the live demo (spot=100000, strike=300000, 90d, 60% vol) to
         // expose a real precision bug -- deriving a tiny call price via
         // put-call parity from a put ~200,000x larger loses so much
         // absolute precision in double that the "collapse to Black-
         // Scholes" property broke by ~82% here specifically, even though
-        // every other scenario above (max ~1.3x moneyness) passed. Fixed
-        // by evaluating the CF and COS summation in long double (see
-        // heston.cpp); this case is the regression test for that fix.
+        // every other scenario above (max ~1.3x moneyness) passed. Root
+        // cause was catastrophic cancellation in heston_log_return_cf's
+        // log((1-g*E)/(1-g)) term, NOT anything long double could fix --
+        // an earlier long-double attempt "fixed" this on x86 but was a
+        // silent no-op on Apple Silicon, where long double == double
+        // (see docs/phase-log.md for the full story). The real,
+        // portable fix uses a complex log1p (clog1p() in heston.cpp)
+        // to compute that log accurately regardless of platform; this
+        // case is the regression test for that fix.
         {100000.0, 300000.0, 90.0 / 365.0, 0.60, deriv::OptionType::Call, "BTC deep OTM call, strike=3x spot, 90d, 60% vol"},
     };
 
