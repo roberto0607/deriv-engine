@@ -234,7 +234,7 @@
   <header>
     <div class="kicker">C++20 · options pricing engine</div>
     <h1>deriv&#8209;engine</h1>
-    <p class="tagline">Eight independent option-pricing methods, hand-built from the Black-Scholes PDE up through reverse-mode AAD, calibrated against a real Deribit BTC options chain — not synthetic data.</p>
+    <p class="tagline">Nine independent option-pricing methods, hand-built from the Black-Scholes PDE up through reverse-mode AAD and Heston stochastic vol, calibrated against a real Deribit BTC options chain — not synthetic data.</p>
     <div class="badges">
       <span class="badge"><span class="dot"></span>CI passing · <span id="stat-tests">34</span> tests / <span id="stat-assertions">76</span> assertions</span>
       <span class="badge">C++20 · CMake · Catch2</span>
@@ -248,7 +248,7 @@
       <div class="stat"><div class="stat-val" id="stat-convergence">96.8%</div><div class="stat-label">of contracts converged during IV calibration</div></div>
       <div class="stat"><div class="stat-val" id="stat-gap">0.3pp</div><div class="stat-label">typical (median) gap vs. exchange-quoted IV</div></div>
       <div class="stat"><div class="stat-val" id="stat-contracts">904</div><div class="stat-label">real BTC contracts pulled from Deribit's public chain</div></div>
-      <div class="stat"><div class="stat-val">8</div><div class="stat-label">independent pricing methods, cross-validated against each other</div></div>
+      <div class="stat"><div class="stat-val">9</div><div class="stat-label">independent pricing methods, cross-validated against each other</div></div>
     </div>
     <div style="height:14px"></div>
     <div class="lede">
@@ -261,7 +261,7 @@
   </section>
 
   <section>
-    <div class="section-head"><span class="section-num">02</span><h2>Eight pricing methods, cross-validated</h2></div>
+    <div class="section-head"><span class="section-num">02</span><h2>Nine pricing methods, cross-validated</h2></div>
     <p class="section-sub">Every method is checked against at least one independent method or real data, not just against itself.</p>
     <div class="table-scroll">
       <table>
@@ -275,6 +275,7 @@
           <tr><td class="method">Longstaff-Schwartz</td><td>American Monte Carlo via regression-based continuation value</td><td class="validated">Least-squares fit solved by hand (Gaussian elimination, partial pivoting)</td></tr>
           <tr><td class="method">Crank-Nicolson PDE</td><td>Finite-difference solver, tridiagonal system</td><td class="validated">Stays stable where the explicit scheme provably diverges</td></tr>
           <tr><td class="method">IV calibration</td><td>Newton-Raphson solve for implied vol using vega, bisection fallback near zero vega</td><td class="validated">96.8% convergence / 0.3pp typical gap vs. real Deribit quotes</td></tr>
+          <tr><td class="method">Heston (stochastic vol)</td><td>COS-method pricing under vol-of-vol, mean reversion, and spot-vol correlation</td><td class="validated">Collapses exactly to Black-Scholes in the deterministic-variance limit; put-call parity holds directly on Heston prices (independent of BS)</td></tr>
         </tbody>
       </table>
     </div>
