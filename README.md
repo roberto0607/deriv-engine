@@ -49,6 +49,7 @@ engine's Heston model is calibrated to reproduce.
 |---|---|---|
 | Black-Scholes closed-form | Exact European pricing + analytical Greeks | Textbook reference values, put-call parity |
 | Binomial tree | American early exercise | Converges to Black-Scholes as steps→∞ |
+| Trinomial tree | A second, independently-derived lattice (3 branches/node instead of 2) | Agrees with the binomial tree at high step counts; measured (not assumed) ~5-10% lower error at equal step counts |
 | Monte Carlo | Simulation-based pricing, variance reduction | Converges to Black-Scholes; antithetic + control variates give a measured 6.97x variance reduction |
 | Reverse-mode AAD | Hand-built automatic differentiation | Matches analytical Greeks; benchmarked against bump-and-revalue |
 | Delta-hedging simulation | Realized P&L vs. theoretical price | Mean PnL ≈ 0 across 2000 simulated paths; hedging error shrinks ~4.5x from monthly to daily rebalancing |

@@ -636,3 +636,86 @@ state, without hedging, that this was caught by testing on real
 target hardware, not by reasoning about the standard in advance — and
 that the actual fix doesn't depend on `long double`'s width being
 anything in particular, on any platform.
+
+---
+
+## Phase 10 — Trinomial tree (done)
+
+**What was built:**
+- `trinomial_tree_price()`, overloaded for `EuropeanOption` and
+  `AmericanOption`, alongside the existing `binomial_tree_price()` in
+  `tree_pricer.cpp` — the Boyle (1986) trinomial lattice: each node
+  branches to three nodes (up, middle/unchanged, down) at the next
+  time step instead of the binomial tree's two
+- Up/down step size `dx = sigma*sqrt(3*dt)` and branch probabilities
+  `pu`, `pm`, `pd` derived by moment-matching (choosing the three
+  probabilities so the discretized process's mean and variance over
+  one step match the true lognormal process's) — the same idea behind
+  the binomial tree's `u`/`d`/`p`, just with a third free parameter
+  (the middle branch) to match with
+- Wired into the WASM demo (`wasm_bridge.cpp` gained
+  `bridge_trinomial_price_european`/`_american`, `docs/index.html`
+  gained a "Trinomial tree" result card next to "Binomial tree",
+  respecting the same exercise-style toggle) — verified against the
+  actual compiled WASM module in Node before shipping, not just the
+  native build, given this codebase's own recent history with
+  platform-dependent floating-point behavior (see Phase 9)
+
+**Validated against:**
+- Converges to Black-Scholes for both European calls and puts: ~2%
+  gap at 10 steps (same slack the binomial tree test allows), ~0.1%
+  at 500 steps
+- American put priced above the corresponding European put under a
+  nonzero dividend yield, same property the binomial tree is checked
+  against
+- **Agrees with the binomial tree directly**, not just via a shared
+  Black-Scholes reference — checked across three scenarios (ATM call,
+  OTM put with dividends, BTC-scale high-vol ITM call) at 800 steps
+  each, within 0.2%. This is meaningfully stronger evidence than each
+  tree separately matching Black-Scholes: `run_tree()` and
+  `run_trinomial_tree()` are two completely independent
+  implementations (different state-space indexing, different
+  moment-matching derivation for their probabilities), so an error in
+  one wouldn't be expected to also appear in the other. Two
+  independently-derived numerical methods landing on the same answer
+  rules out a shared mistake in a way that one method matching a
+  third, unrelated closed-form reference doesn't fully rule out.
+
+**Measured, not assumed:** does the trinomial tree actually converge
+faster per step than the binomial tree, the way it's often described?
+Checked directly (`[.manual]` test, same "measure it, don't just
+claim it" approach as Phase 4's AAD benchmark) at steps = 10, 25, 50,
+100, 200, 400 on the standard reference case (S=K=100, T=1, r=5%,
+vol=20%). Result: trinomial error was lower at 5 of 6 step counts,
+by roughly 5-10% — a modest, real improvement, not a different
+convergence order. Both trees still shrink error at essentially the
+same O(1/N) rate; the trinomial tree's extra branch buys a smaller
+constant, not an asymptotically better exponent. Presented honestly
+as that: a modest, measured improvement, not "3 branches is 50%
+better" or similar oversold claim.
+
+**Defend this:**
+Can explain why a third (middle) branch needs a third condition to
+pin down: two branches (binomial) need only match the process's mean
+and variance, which is exactly two equations for two unknowns (`u`
+and `p`, with `d=1/u` fixed by the recombination requirement); three
+branches (trinomial) have three free probabilities, so a third
+condition is needed — here, that's `dx` itself being chosen up front
+(`sigma*sqrt(3*dt)`, not derived from moment-matching), leaving
+`pu`/`pm`/`pd` to solve the two moment equations plus the
+probabilities-sum-to-one constraint. Can explain why this tree was
+verified against the actual compiled WASM artifact via Node, not just
+the native Linux build, connecting directly back to the Phase 9
+lesson: a numerical method "working" on one build target is not
+evidence it works everywhere, and this project no longer treats a
+single platform's test run as sufficient for anything touching
+floating-point math. Can explain, honestly and without inflating the
+result, that the trinomial tree here is not a strictly-better
+replacement for the binomial tree — it's roughly 5-10% more accurate
+per step at real, measured cost of running 2-3x more nodes per step
+(2n+1 vs n+1 at depth n) — and can state plainly why both were kept
+side by side in the live demo rather than the trinomial tree
+replacing the binomial one: showing two independently-derived methods
+agree is itself part of this project's correctness evidence (see
+Validated against, above), and that evidence is weaker with only one
+tree in the picture.

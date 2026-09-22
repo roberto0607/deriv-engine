@@ -235,6 +235,91 @@ TEST_CASE("American option is worth at least as much as European", "[tree]") {
     REQUIRE(amer_price >= euro_price);
 }
 
+TEST_CASE("Trinomial tree converges to Black-Scholes for European call", "[tree][trinomial][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    double tree_price_low_steps = deriv::trinomial_tree_price(option, market, 10);
+    double tree_price_high_steps = deriv::trinomial_tree_price(option, market, 500);
+
+    REQUIRE(tree_price_low_steps == Catch::Approx(bs_price).epsilon(0.02));
+    REQUIRE(tree_price_high_steps == Catch::Approx(bs_price).epsilon(0.001));
+}
+
+TEST_CASE("Trinomial tree converges to Black-Scholes for European put", "[tree][trinomial][convergence]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Put};
+
+    double bs_price = deriv::black_scholes_price(option, market);
+    double tree_price = deriv::trinomial_tree_price(option, market, 500);
+
+    REQUIRE(tree_price == Catch::Approx(bs_price).epsilon(0.001));
+}
+
+TEST_CASE("Trinomial American option is worth at least as much as European", "[tree][trinomial]") {
+    deriv::MarketData market{100.0, 0.05, 0.03, 0.2};
+    deriv::EuropeanOption euro_put{100.0, 1.0, deriv::OptionType::Put};
+    deriv::AmericanOption amer_put{100.0, 1.0, deriv::OptionType::Put};
+
+    double euro_price = deriv::trinomial_tree_price(euro_put, market, 500);
+    double amer_price = deriv::trinomial_tree_price(amer_put, market, 500);
+
+    REQUIRE(amer_price >= euro_price);
+}
+
+TEST_CASE("Binomial and trinomial trees agree with each other at high step counts",
+          "[tree][trinomial][convergence]") {
+    // Both trees are independent discretizations of the same continuous
+    // process (2 branches vs. 3 per node, different u/d/p vs.
+    // dx/pu/pm/pd derivations) -- at enough steps, both must converge
+    // to the same place regardless of which discretization got there,
+    // which is a stronger check than each one separately matching
+    // Black-Scholes (that only rules out a shared error, and there
+    // isn't one to share here: run_tree() and run_trinomial_tree() are
+    // two independently-derived implementations).
+    struct Scenario {
+        double spot, strike, T, vol, r, q;
+        deriv::OptionType type;
+        const char* label;
+    };
+    std::vector<Scenario> scenarios = {
+        {100.0, 100.0, 1.0, 0.2, 0.05, 0.0, deriv::OptionType::Call, "ATM call"},
+        {100.0, 120.0, 0.5, 0.35, 0.03, 0.02, deriv::OptionType::Put, "OTM put, short-dated, with dividend"},
+        {100000.0, 90000.0, 90.0 / 365.0, 0.8, 0.05, 0.0, deriv::OptionType::Call, "BTC-scale ITM call, high vol"},
+    };
+
+    for (const auto& s : scenarios) {
+        INFO(s.label);
+        deriv::MarketData market{s.spot, s.r, s.q, s.vol};
+        deriv::EuropeanOption option{s.strike, s.T, s.type};
+
+        double bino = deriv::binomial_tree_price(option, market, 800);
+        double trino = deriv::trinomial_tree_price(option, market, 800);
+
+        REQUIRE(trino == Catch::Approx(bino).epsilon(0.002));
+    }
+}
+
+// Measured, not just claimed: does the trinomial tree actually converge
+// faster than the binomial tree per step, as textbooks generally
+// suggest (smoother/monotonic convergence from the extra branch)? Or is
+// that a wash at this project's scale? See docs/phase-log.md Phase 10
+// for the honest answer, the same way Phase 4 measured (rather than
+// assumed) where AAD's speed advantage actually shows up.
+TEST_CASE("Trinomial tree convergence rate vs. binomial tree, measured directly",
+          "[tree][trinomial][.manual]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};
+    double bs_price = deriv::black_scholes_price(option, market);
+
+    for (int steps : {10, 25, 50, 100, 200, 400}) {
+        double bino_err = std::abs(deriv::binomial_tree_price(option, market, steps) - bs_price);
+        double trino_err = std::abs(deriv::trinomial_tree_price(option, market, steps) - bs_price);
+        WARN("steps=" << steps << "  binomial error=" << bino_err << "  trinomial error=" << trino_err);
+    }
+}
+
 TEST_CASE("Monte Carlo converges to Black-Scholes for European call", "[monte_carlo][convergence]") {
     deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
     deriv::EuropeanOption option{100.0, 1.0, deriv::OptionType::Call};

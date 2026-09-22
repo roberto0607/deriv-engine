@@ -234,7 +234,7 @@
   <header>
     <div class="kicker">C++20 · options pricing engine</div>
     <h1>deriv&#8209;engine</h1>
-    <p class="tagline">Nine independent option-pricing methods, hand-built from the Black-Scholes PDE up through reverse-mode AAD and Heston stochastic vol, calibrated against a real Deribit BTC options chain — not synthetic data.</p>
+    <p class="tagline">Ten independent option-pricing methods, hand-built from the Black-Scholes PDE up through reverse-mode AAD and Heston stochastic vol, calibrated against a real Deribit BTC options chain — not synthetic data.</p>
     <div class="badges">
       <span class="badge"><span class="dot"></span>CI passing · <span id="stat-tests">34</span> tests / <span id="stat-assertions">76</span> assertions</span>
       <span class="badge">C++20 · CMake · Catch2</span>
@@ -248,7 +248,7 @@
       <div class="stat"><div class="stat-val" id="stat-convergence">96.8%</div><div class="stat-label">of contracts converged during IV calibration</div></div>
       <div class="stat"><div class="stat-val" id="stat-gap">0.3pp</div><div class="stat-label">typical (median) gap vs. exchange-quoted IV</div></div>
       <div class="stat"><div class="stat-val" id="stat-contracts">904</div><div class="stat-label">real BTC contracts pulled from Deribit's public chain</div></div>
-      <div class="stat"><div class="stat-val">9</div><div class="stat-label">independent pricing methods, cross-validated against each other</div></div>
+      <div class="stat"><div class="stat-val">10</div><div class="stat-label">independent pricing methods, cross-validated against each other</div></div>
     </div>
     <div style="height:14px"></div>
     <div class="lede">
@@ -261,7 +261,7 @@
   </section>
 
   <section>
-    <div class="section-head"><span class="section-num">02</span><h2>Nine pricing methods, cross-validated</h2></div>
+    <div class="section-head"><span class="section-num">02</span><h2>Ten pricing methods, cross-validated</h2></div>
     <p class="section-sub">Every method is checked against at least one independent method or real data, not just against itself.</p>
     <div class="table-scroll">
       <table>
@@ -269,6 +269,7 @@
         <tbody>
           <tr><td class="method">Black-Scholes</td><td>Closed-form European price &amp; Greeks; ground truth</td><td class="validated">Derived directly from the PDE — provably exact under GBM</td></tr>
           <tr><td class="method">Binomial tree</td><td>American exercise, discrete-time convergence</td><td class="validated">Converges to Black-Scholes: ~2% gap at 10 steps, ~0.1% at 500</td></tr>
+          <tr><td class="method">Trinomial tree</td><td>A second, independently-derived lattice (3 branches/node vs. binomial's 2)</td><td class="validated">Agrees with the binomial tree at high step counts; ~5-10% lower error at equal steps, measured directly</td></tr>
           <tr><td class="method">Monte Carlo</td><td>GBM path simulation, variance reduction</td><td class="validated">Matches closed-form within sampling error; antithetic variates reduce variance</td></tr>
           <tr><td class="method">Reverse-mode AAD</td><td>All Greeks in ~one backward pass over a hand-built tape</td><td class="validated">Delta cross-checked against seeded bump-and-revalue (0.6376 vs 0.6363)</td></tr>
           <tr><td class="method">Delta-hedging sim</td><td>Realized P&amp;L of a rebalanced hedge vs. theoretical price</td><td class="validated">Mean P&amp;L ≈ 0 across 2,000 paths post-fix (see bug log)</td></tr>
@@ -403,6 +404,7 @@
       <div class="calc-results" id="calc-results">
         <div class="calc-result"><div class="rlabel">Black-Scholes</div><div class="rval" id="res-bs">—</div><div class="rsub">closed-form, European</div></div>
         <div class="calc-result"><div class="rlabel">Binomial tree</div><div class="rval" id="res-tree">—</div><div class="rsub" id="res-tree-sub">500 steps</div></div>
+        <div class="calc-result"><div class="rlabel">Trinomial tree</div><div class="rval" id="res-trinomial">—</div><div class="rsub" id="res-trinomial-sub">500 steps</div></div>
         <div class="calc-result"><div class="rlabel">Monte Carlo</div><div class="rval" id="res-mc">—</div><div class="rsub" id="res-mc-sub">200,000 paths, seeded</div></div>
         <div class="calc-result"><div class="rlabel">Heston</div><div class="rval" id="res-heston">—</div><div class="rsub">stochastic vol, COS method</div></div>
       </div>
@@ -509,6 +511,19 @@
       [p.spot, p.rate, 0, p.vol, p.strike, p.T, p.type, 500]);
     document.getElementById('res-tree').textContent = fmtUSD(tree);
     document.getElementById('res-tree-sub').textContent = '500 steps, ' + p.style;
+
+    // Trinomial tree — a second, independent tree discretization (3
+    // branches per node instead of 2), same exercise-style handling as
+    // the binomial tree above. Shown side by side deliberately: two
+    // trees derived completely independently converging to the same
+    // price is stronger evidence than either one matching Black-Scholes
+    // alone (see docs/phase-log.md Phase 10).
+    var trinomialFn = p.style === 'american' ? 'bridge_trinomial_price_american' : 'bridge_trinomial_price_european';
+    var trinomial = Module.ccall(trinomialFn, 'number',
+      ['number','number','number','number','number','number','number','number'],
+      [p.spot, p.rate, 0, p.vol, p.strike, p.T, p.type, 500]);
+    document.getElementById('res-trinomial').textContent = fmtUSD(trinomial);
+    document.getElementById('res-trinomial-sub').textContent = '500 steps, ' + p.style;
 
     // Monte Carlo — always European (that's what this engine's MC pricer solves), seeded for reproducibility.
     var mcPtr = Module._malloc(2 * 8);

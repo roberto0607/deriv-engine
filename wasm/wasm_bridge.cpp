@@ -84,6 +84,22 @@ double bridge_tree_price_american(double spot, double rate, double div, double v
                                 make_market(spot, rate, div, vol), steps);
 }
 
+// Trinomial tree price, European exercise.
+EMSCRIPTEN_KEEPALIVE
+double bridge_trinomial_price_european(double spot, double rate, double div, double vol,
+                                        double strike, double T, int type, int steps) {
+    return trinomial_tree_price(make_euro(strike, T, type),
+                                 make_market(spot, rate, div, vol), steps);
+}
+
+// Trinomial tree price, American exercise (early-exercise aware).
+EMSCRIPTEN_KEEPALIVE
+double bridge_trinomial_price_american(double spot, double rate, double div, double vol,
+                                        double strike, double T, int type, int steps) {
+    return trinomial_tree_price(make_amer(strike, T, type),
+                                 make_market(spot, rate, div, vol), steps);
+}
+
 // Monte Carlo price. Writes [price, standard_error] into out.
 EMSCRIPTEN_KEEPALIVE
 void bridge_mc_price(double spot, double rate, double div, double vol,
