@@ -30,7 +30,7 @@ jobs:
           mkdir -p docs
           em++ -std=c++20 -O2 \
             -I include \
-            src/black_scholes.cpp src/greeks.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/implied_vol.cpp src/day_count.cpp src/heston.cpp \
+            src/black_scholes.cpp src/greeks.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/implied_vol.cpp src/day_count.cpp src/heston.cpp src/tape2.cpp \
             wasm/wasm_bridge.cpp \
             -s MODULARIZE=1 -s EXPORT_NAME=createDerivEngine -s ENVIRONMENT=web \
             -s EXPORTED_FUNCTIONS='["_bridge_bs_price","_bridge_bs_greeks","_bridge_tree_price_european","_bridge_tree_price_american","_bridge_trinomial_price_european","_bridge_trinomial_price_american","_bridge_mc_price","_bridge_implied_vol","_bridge_heston_price","_malloc","_free"]' \
@@ -54,7 +54,7 @@ jobs:
           ASSERTIONS=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+ assertions' | grep -oE '^[0-9]+')
 
           g++ -std=c++20 -O2 -I include \
-            tools/gen_stats.cpp src/vol_surface.cpp src/implied_vol.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp \
+            tools/gen_stats.cpp src/vol_surface.cpp src/implied_vol.cpp src/black_scholes.cpp src/greeks.cpp src/tape2.cpp src/day_count.cpp \
             -o build/gen_stats
           ./build/gen_stats > /tmp/calib_stats.json
 
@@ -77,7 +77,7 @@ jobs:
       - name: Calibrate Heston to real market data
         run: |
           g++ -std=c++20 -O2 -I include \
-            tools/calibrate_heston.cpp src/heston.cpp src/heston_calibration.cpp src/vol_surface.cpp src/implied_vol.cpp src/black_scholes.cpp src/greeks.cpp src/day_count.cpp \
+            tools/calibrate_heston.cpp src/heston.cpp src/heston_calibration.cpp src/vol_surface.cpp src/implied_vol.cpp src/black_scholes.cpp src/greeks.cpp src/tape2.cpp src/day_count.cpp \
             -o build/calibrate_heston
           ./build/calibrate_heston > docs/heston_calibration.json
           cat docs/heston_calibration.json
