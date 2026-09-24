@@ -5,6 +5,6 @@
   "median_gap_pp": 0.26,
   "avg_gap_pp": 2.2,
   "p90_gap_pp": 5.6,
-  "tests": 74,
-  "assertions": 273
+  "tests": 76,
+  "assertions": 279
 }
