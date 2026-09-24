@@ -880,10 +880,11 @@ constant-parameter Heston — there's nothing for the model to fail to
 capture. On the real chain, the market's actual volatility dynamics are
 not exactly constant-parameter Heston, and forcing a joint fit across
 multiple real maturities makes that mismatch visible: fit quality
-degrades as more expiries are pooled (2 expiries: 1.35pp; 3 expiries
-[43d/99d/190d]: ~2.2pp; 4 expiries [+281d]: ~2.9-3.1pp, measured during
-development, not included in the shipped tool). This is the expected,
-well-known behavior of a single-factor stochastic-vol model asked to fit
+degrades as more expiries are pooled — 2 expiries (43d/99d): 1.35pp;
+3 expiries (43d/99d/190d): ~2.2pp; 4 expiries (43d/99d/190d/281d):
+~2.9-3.1pp, measured during development, not included in the shipped
+tool. This is the expected, well-known behavior of a single-factor
+stochastic-vol model asked to fit
 a full term structure with one fixed parameter set — not a bug, and not
 something a better optimizer or more iterations would fix. Properly
 resolving it needs a term-structure extension (piecewise-constant
