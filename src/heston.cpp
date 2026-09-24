@@ -1,4 +1,5 @@
 #include "deriv-engine/heston.hpp"
+#include "deriv-engine/cos_pricing_internal.hpp"
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -8,114 +9,9 @@ namespace deriv {
 namespace {
 
 using cplx = std::complex<double>;
-
-// Complex log1p: computes log(1 + z) accurately even when |z| is tiny,
-// the way std::log1p does for reals. std::log(1.0 + z) loses precision
-// here because "1.0 + z" rounds to the nearest double *before* the log
-// is taken -- if z is, say, O(1e-12), most or all of its digits are
-// gone before log() ever sees them. This splits log(1+z) into a real
-// part computed via the real std::log1p on |1+z|^2-1 (itself expanded
-// so it doesn't re-introduce the same cancellation: |1+z|^2 - 1 =
-// 2*Re(z) + |z|^2, which needs no subtraction of near-equal numbers)
-// and an imaginary part via atan2, which is well-conditioned on its
-// own. See the note on heston_log_return_cf() below for why this
-// specific cancellation matters here.
-cplx clog1p(cplx z) {
-    double zr = z.real();
-    double zi = z.imag();
-    double re = 0.5 * std::log1p(2.0 * zr + zr * zr + zi * zi);
-    double im = std::atan2(zi, 1.0 + zr);
-    return cplx(re, im);
-}
-
-// Characteristic function of the log-return ln(S_T / S0) under Heston,
-// in the "little trap" formulation. This is the piece that's genuinely
-// easy to get subtly wrong (a sign flip in g(u), or picking the wrong
-// branch of d(u)), so its correctness is verified two independent
-// ways elsewhere in this codebase: (1) the deterministic-variance
-// limit must collapse exactly to Black-Scholes (see
-// tests/test_main.cpp), and (2) an independent Monte Carlo simulation
-// of the actual Heston SDEs must agree with this closed-form price.
-cplx heston_log_return_cf(double u, double tau, double r, double q, const HestonParams& p) {
-    const cplx i(0.0, 1.0);
-    const cplx iu = i * u;
-
-    cplx rho_xi_iu = p.rho * p.xi * iu;
-    cplx A = p.kappa - rho_xi_iu;
-    cplx d = std::sqrt(A * A + p.xi * p.xi * (iu + u * u));
-
-    // (A - d) is computed here as -(iu + u^2) / (A + d), NOT as a
-    // direct subtraction of A and d. This matters: A and d are both
-    // O(kappa) and nearly equal whenever xi is small-to-moderate (not
-    // just in the xi->0 limit), so computing (A - d) as a literal
-    // difference loses precision to catastrophic cancellation --
-    // confirmed empirically (this cost ~0.5-6% pricing error at
-    // xi=0.01-0.5 before this fix, verified against the exact
-    // deterministic-variance Black-Scholes limit). The identity
-    // A^2 - d^2 = -xi^2 (iu + u^2) lets (A-d) be computed as
-    // (A^2-d^2)/(A+d) instead -- a sum in the denominator, not a
-    // difference -- which stays numerically stable across the whole
-    // parameter range. It also cleanly cancels the xi^2 that
-    // multiplies (A-d) everywhere it's used below.
-    cplx A_minus_d_over_xi_sq = -(iu + u * u) / (A + d);
-    cplx A_minus_d = A_minus_d_over_xi_sq * p.xi * p.xi;
-    cplx g = A_minus_d / (A + d);
-
-    cplx exp_neg_d_tau = std::exp(-d * tau);
-
-    // The log((1 - g*E)/(1 - g)) term below (E = exp(-d*tau)) is a
-    // second, independent cancellation hazard from the (A-d) one
-    // above, and it survives even after that fix: g = O(xi^2) is tiny
-    // whenever xi is small-to-moderate (not just at xi->0), which
-    // makes the ratio (1-g*E)/(1-g) extremely close to 1. Evaluating
-    // std::log() of a value that's within ~1e-10 to 1e-15 of 1.0
-    // rounds away most or all of the meaningful digits *before* log()
-    // runs, since "1.0 - g*E" and "1.0 - g" both round to (or near) 1.0
-    // in double precision.
-    //
-    // This CF error is normally invisible -- it's a tiny relative error
-    // in an intermediate quantity that gets lost in the noise for
-    // ordinary (near-the-money) options. It stopped being invisible
-    // for deep out-of-the-money/in-the-money options priced through
-    // put-call parity (see heston_put_price() below): parity derives a
-    // *small* target price as the difference of two *large* numbers
-    // (the put and the discounted forward), so the target's accuracy
-    // is bounded by the *absolute* accuracy of the put, not its
-    // relative accuracy. Confirmed empirically: for
-    // spot=100000/strike=300000/90d/60%vol (strike = 3x spot, realistic
-    // for a crypto options chain), this cancellation alone accounted
-    // for an 82% pricing error in the deterministic-variance limit
-    // (which must equal Black-Scholes exactly) -- fixed to ~0.001% by
-    // rewriting the ratio as 1 + g*(1-E)/(1-g) and evaluating its log
-    // via clog1p() above, which needs no subtraction of near-equal
-    // values at all.
-    cplx ratio_minus_1 = g * (1.0 - exp_neg_d_tau) / (1.0 - g);
-    cplx log_term = clog1p(ratio_minus_1);
-
-    cplx C = iu * (r - q) * tau + p.kappa * p.theta * tau * A_minus_d_over_xi_sq -
-             2.0 * (p.kappa * p.theta / (p.xi * p.xi)) * log_term;
-
-    cplx D = A_minus_d_over_xi_sq * ((1.0 - exp_neg_d_tau) / (1.0 - g * exp_neg_d_tau));
-
-    return std::exp(C + D * p.v0);
-}
-
-// chi_k(lower, upper) = integral_{lower}^{upper} e^y cos(k*pi*(y-a)/(b-a)) dy,
-// the standard COS-method payoff coefficient (Fang & Oosterlee 2008).
-double chi(double k_pi_over_ba, double lower, double upper, double a) {
-    double denom = 1.0 + k_pi_over_ba * k_pi_over_ba;
-    double term1 = std::cos(k_pi_over_ba * (upper - a)) * std::exp(upper) -
-                   std::cos(k_pi_over_ba * (lower - a)) * std::exp(lower);
-    double term2 = k_pi_over_ba * (std::sin(k_pi_over_ba * (upper - a)) * std::exp(upper) -
-                                    std::sin(k_pi_over_ba * (lower - a)) * std::exp(lower));
-    return (term1 + term2) / denom;
-}
-
-// psi_k(lower, upper) = integral_{lower}^{upper} cos(k*pi*(y-a)/(b-a)) dy.
-double psi(int k, double k_pi_over_ba, double lower, double upper, double a) {
-    if (k == 0) return upper - lower;
-    return (std::sin(k_pi_over_ba * (upper - a)) - std::sin(k_pi_over_ba * (lower - a))) / k_pi_over_ba;
-}
+using detail::chi;
+using detail::psi;
+using detail::heston_log_return_cf;
 
 // COS-method European PUT price under Heston. Calls are recovered via
 // put-call parity in heston_price() below, rather than pricing calls

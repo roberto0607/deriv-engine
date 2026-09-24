@@ -63,6 +63,7 @@ engine's Heston model is calibrated to reproduce.
 | Heston stochastic volatility | Closed-form pricing via the COS method (Fang & Oosterlee), capturing volatility skew a flat-vol model can't | Collapses to Black-Scholes in the deterministic-variance limit; independently cross-checked against a full Monte Carlo simulation of the Heston SDE; kappa/xi/rho calibrated (Nelder-Mead, regularized) against 66 real Deribit contracts, fitting the smile to 0.43pp RMSE in vol space |
 | Asian options (path-dependent MC) | Full-path GBM simulation, not terminal-jump sampling | Geometric-average variant matches its Kemna-Vorst closed form; arithmetic ≥ geometric (AM-GM, provable pathwise); Asian < vanilla European; single-monitoring-date edge case matches vanilla Monte Carlo exactly |
 | Barrier options (path-dependent MC) | All 4 knock-in/knock-out directions | Down-and-out call matches a method-of-images closed form; the other 3 directions validated via the model-independent in/out parity identity (knock-out + knock-in = vanilla) |
+| Bates model (Heston + Merton jumps) | Adds discontinuous jumps on top of Heston's diffusion — a jump-diffusion closed-form via the COS method, reusing Heston's own characteristic function rather than re-deriving it | Collapses exactly to Heston when jump intensity is zero; collapses to closed-form Merton (1976) jump-diffusion in the deterministic-variance limit; independently cross-checked against a full Monte Carlo simulation of the actual Bates SDE + jump process |
 
 Every method above independently arrives at the same price for the
 same European option — four structurally different approaches
@@ -77,7 +78,11 @@ evidence for this engine.
   hedging PnL calculation, a random-seed mismatch that corrupted a
   finite-difference comparison, and a catastrophic-cancellation bug in
   the Heston characteristic function that caused an 82% pricing error
-  for far-out-of-the-money options. See `docs/phase-log.md`.
+  for far-out-of-the-money options, and a discount-rate bug in an
+  independent Merton jump-diffusion test oracle (not in the pricer
+  itself) found by cross-checking against a 20-million-path direct
+  Monte Carlo simulation until the real disagreement was pinned down.
+  See `docs/phase-log.md`.
 - **AAD was benchmarked honestly, not just claimed to be fast.**
   At the tested scale (4 Greeks, 100k paths), hand-built reverse-mode
   AAD was measured to be *slower* than naive bump-and-revalue — the

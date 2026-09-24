@@ -20,6 +20,8 @@
 #include "deriv-engine/heston_mc.hpp"
 #include "deriv-engine/heston_calibration.hpp"
 #include "deriv-engine/exotic_options.hpp"
+#include "deriv-engine/bates.hpp"
+#include "deriv-engine/bates_mc.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -1593,4 +1595,198 @@ TEST_CASE("In/out barrier parity: up-and-out + up-and-in == vanilla", "[exotic][
     INFO("out: " << out_result.price << "  in: " << in_result.price
                   << "  sum: " << out_result.price + in_result.price << "  vanilla: " << vanilla_price);
     REQUIRE(out_result.price + in_result.price == Catch::Approx(vanilla_price).margin(4.0 * combined_se));
+}
+
+// --- Bates model (Heston + Merton jumps) -----------------------------------
+//
+// bates.hpp's own header comment names three independent correctness
+// checks, mirroring the pattern established for Heston: (1) jump_intensity
+// = 0 must collapse EXACTLY to heston_price(), since the jump CF becomes
+// exp(0) = 1 identically; (2) in the deterministic-variance limit (xi ->
+// 0, v0 = theta), Bates must collapse to the closed-form Merton (1976)
+// jump-diffusion price; (3) an independent Monte Carlo simulation of the
+// actual Bates SDE + jump process must agree with the COS-method closed
+// form. All three are implemented below.
+
+namespace {
+
+// Independent closed-form oracle for Merton (1976) jump-diffusion pricing,
+// NOT calling into bates.cpp/heston.cpp at all: a Poisson-weighted sum of
+// Black-Scholes prices, each evaluated at a jump-adjusted volatility and
+// rate (the standard Merton series). n is capped at 50 terms, which for
+// the lambda*T magnitudes used below makes the tail's contribution many
+// orders of magnitude below double precision (Poisson tail past n=50 for
+// lambda*T ~ O(1) is astronomically small).
+//
+// Subtlety this function specifically exists to get right (see
+// docs/phase-log.md's Phase 14 entry for the full debugging story):
+// black_scholes_price() called with rate=r_n uses r_n for BOTH generating
+// the forward/terminal distribution AND discounting (e^{-r_n*T}). The
+// correct Merton formula needs r_n only for the forward -- the true
+// discount rate is always r. Naively calling black_scholes_price(rate=r_n)
+// silently double-uses r_n and produces a price that is wrong by
+// exp((r_n - r)*T), a small-looking (~0.5% in the case below) but real and
+// systematic error that would make this "independent" oracle agree with
+// nothing, correct or not. The fix: rescale each branch's raw
+// black_scholes_price() output by exp((r_n - r)*T) before summing, which
+// swaps the erroneous e^{-r_n*T} discount factor for the correct e^{-r*T}
+// one while leaving the r_n-driven forward untouched.
+double merton_jump_diffusion_price(double spot, double strike, double T, double r, double q, double vol,
+                                    double lambda, double jump_mean, double jump_vol, deriv::OptionType type) {
+    double k = std::exp(jump_mean + 0.5 * jump_vol * jump_vol) - 1.0;
+    double sum = 0.0;
+
+    for (int n = 0; n <= 50; ++n) {
+        double sigma_n = std::sqrt(vol * vol + n * jump_vol * jump_vol / T);
+        double r_n = r - lambda * k + n * std::log(1.0 + k) / T;
+
+        deriv::MarketData market_n{spot, r_n, q, sigma_n};
+        deriv::EuropeanOption option{strike, T, type};
+        double bs_n = deriv::black_scholes_price(option, market_n);
+
+        // Undo black_scholes_price()'s use of r_n as the discount rate;
+        // see the function comment above.
+        double bs_n_corrected = bs_n * std::exp((r_n - r) * T);
+
+        double log_poisson_weight = -lambda * T + n * std::log(lambda * T) - std::lgamma(n + 1.0);
+        sum += std::exp(log_poisson_weight) * bs_n_corrected;
+    }
+
+    return sum;
+}
+
+}  // namespace
+
+TEST_CASE("Bates collapses exactly to Heston when jump intensity is zero", "[bates]") {
+    // With jump_intensity = 0, jump_log_return_cf's compound-Poisson CF
+    // is exp(0 * (phi - 1)) = exp(0) = 1 identically, and the compensator
+    // k stops mattering (lambda*k = 0 regardless of jump_mean/jump_vol),
+    // so bates_log_return_cf must reduce to heston_log_return_cf exactly
+    // -- not approximately. This is the cheapest, most direct check that
+    // the jump term was wired in correctly (multiplicatively, into the
+    // CF) rather than, say, accidentally always contributing some residual
+    // drift or variance.
+    struct Scenario {
+        double spot, strike, T;
+        deriv::HestonParams heston;
+        deriv::OptionType type;
+        const char* label;
+    };
+
+    std::vector<Scenario> scenarios = {
+        {100.0, 100.0, 1.0, {0.04, 2.0, 0.04, 0.5, -0.5}, deriv::OptionType::Call, "ATM call"},
+        {100.0, 100.0, 1.0, {0.04, 2.0, 0.04, 0.5, -0.5}, deriv::OptionType::Put, "ATM put"},
+        {100000.0, 120000.0, 90.0 / 365.0, {0.64, 1.5, 0.64, 0.9, -0.6}, deriv::OptionType::Call,
+         "BTC-like OTM call"},
+    };
+
+    for (const auto& s : scenarios) {
+        INFO(s.label);
+
+        deriv::MarketData market{s.spot, 0.05, 0.0, 0.0};
+        deriv::EuropeanOption option{s.strike, s.T, s.type};
+
+        double heston = deriv::heston_price(option, market, s.heston);
+
+        // Nonzero jump_mean/jump_vol deliberately, to confirm they're
+        // inert when jump_intensity is zero -- not just that "all zeros"
+        // happens to reduce correctly.
+        deriv::BatesParams bates{s.heston, 0.0, -0.2, 0.4};
+        double bates_p = deriv::bates_price(option, market, bates);
+
+        REQUIRE(bates_p == Catch::Approx(heston).margin(1e-9));
+    }
+}
+
+TEST_CASE("Bates collapses to the closed-form Merton jump-diffusion price in the "
+          "deterministic-variance limit",
+          "[bates][property]") {
+    // Mirrors the Heston-vs-Black-Scholes deterministic-variance test
+    // above: with xi -> 0 and v0 = theta, Heston's stochastic-vol
+    // component degenerates to constant volatility, so Bates must
+    // degenerate to plain Merton (1976) jump-diffusion -- priced here by
+    // merton_jump_diffusion_price() above, which shares no code with
+    // bates.cpp/heston.cpp.
+    struct Scenario {
+        double spot, strike, T, vol, lambda, jump_mean, jump_vol;
+        deriv::OptionType type;
+        const char* label;
+    };
+
+    std::vector<Scenario> scenarios = {
+        {100.0, 100.0, 1.0, 0.20, 0.5, -0.1, 0.3, deriv::OptionType::Call, "ATM call, moderate jumps"},
+        {100.0, 100.0, 1.0, 0.20, 0.5, -0.1, 0.3, deriv::OptionType::Put, "ATM put, moderate jumps"},
+        {100.0, 120.0, 1.0, 0.20, 1.0, -0.15, 0.25, deriv::OptionType::Call, "OTM call, frequent jumps"},
+        {100.0, 80.0, 0.5, 0.25, 0.3, 0.05, 0.2, deriv::OptionType::Put, "OTM put, positive mean jump, 6mo"},
+        {100000.0, 110000.0, 90.0 / 365.0, 0.70, 2.0, -0.08, 0.35, deriv::OptionType::Call,
+         "BTC-like: frequent jumps, 90d"},
+    };
+
+    // Same rationale as the Heston deterministic-variance test: xi small
+    // but not literally zero, so the code path being tested still divides
+    // by xi^2 (cancelled analytically) rather than skipping it.
+    const double xi = 1e-6;
+    const double r = 0.05, q = 0.0;
+
+    for (const auto& s : scenarios) {
+        INFO(s.label);
+
+        deriv::HestonParams heston{s.vol * s.vol, 2.0, s.vol * s.vol, xi, -0.5};
+        deriv::BatesParams bates{heston, s.lambda, s.jump_mean, s.jump_vol};
+
+        deriv::MarketData market{s.spot, r, q, 0.0};
+        deriv::EuropeanOption option{s.strike, s.T, s.type};
+
+        double bates_p = deriv::bates_price(option, market, bates);
+        double merton = merton_jump_diffusion_price(s.spot, s.strike, s.T, r, q, s.vol, s.lambda, s.jump_mean,
+                                                      s.jump_vol, s.type);
+
+        REQUIRE(bates_p == Catch::Approx(merton).epsilon(0.001));
+    }
+}
+
+TEST_CASE("Bates Monte Carlo (independent SDE + jump simulation) agrees with the COS-method "
+          "closed form",
+          "[bates][monte_carlo][property]") {
+    // The third leg of the validation triangle bates.hpp's header comment
+    // names, mirroring heston_mc.hpp's role for Heston: bates_monte_carlo_price()
+    // shares no code with bates_log_return_cf()/bates_put_price() -- it
+    // simulates the Heston variance process (full-truncation Euler,
+    // identical to heston_mc.cpp) with a compound Poisson jump added to
+    // the log-price increment each step, and prices by discounted average
+    // payoff. Agreement is real evidence the CF-based jump compensation
+    // (r - lambda*k) and the compound-Poisson CF identity both match the
+    // SDE they're supposed to describe.
+    struct Scenario {
+        double spot, strike, T;
+        deriv::BatesParams bates;
+        deriv::OptionType type;
+        const char* label;
+        int num_paths = 60000;
+        int num_steps = 100;
+    };
+
+    std::vector<Scenario> scenarios = {
+        {100.0, 100.0, 1.0, {{0.04, 2.0, 0.04, 0.5, -0.5}, 0.5, -0.1, 0.3}, deriv::OptionType::Call,
+         "ATM, moderate vol-of-vol and jumps"},
+        {100.0, 90.0, 2.0, {{0.09, 3.0, 0.16, 0.3, 0.4}, 0.3, 0.05, 0.2}, deriv::OptionType::Put,
+         "positive rho, v0 != theta, mild positive-mean jumps, 2yr"},
+        {100000.0, 120000.0, 90.0 / 365.0, {{0.64, 1.5, 0.64, 0.9, -0.6}, 1.0, -0.08, 0.35},
+         deriv::OptionType::Call, "BTC-like: high vol-of-vol, frequent jumps, 90d"},
+    };
+
+    for (const auto& s : scenarios) {
+        INFO(s.label);
+
+        deriv::MarketData market{s.spot, 0.05, 0.0, 0.0};
+        deriv::EuropeanOption option{s.strike, s.T, s.type};
+
+        double cos_price = deriv::bates_price(option, market, s.bates);
+        deriv::MonteCarloResult mc =
+            deriv::bates_monte_carlo_price(option, market, s.bates, s.num_paths, s.num_steps, true, 42);
+
+        INFO("COS price: " << cos_price << ", MC price: " << mc.price << " +/- " << mc.standard_error);
+        REQUIRE(mc.standard_error > 0.0);
+        REQUIRE(cos_price == Catch::Approx(mc.price).margin(5.0 * mc.standard_error));
+    }
 }

@@ -1016,3 +1016,125 @@ dates, which is what's actually simulated — a continuously-monitored
 barrier is a different, slightly more barrier-sensitive instrument, and
 pricing it exactly needs a discrete-to-continuous correction this
 implementation doesn't apply).
+
+## Phase 14 — Bates model: Heston + Merton jumps (done)
+
+**What was built:**
+- `bates.hpp`/`bates.cpp`: `BatesParams` (a `HestonParams` plus
+  `jump_intensity`, `jump_mean`, `jump_vol`) and `bates_price()`, pricing
+  European options under Bates (1996) — Heston stochastic volatility with
+  a compound Poisson jump process (Merton 1976's lognormal jump-size
+  assumption) layered on the log-price. Prices via the same COS method
+  (Fang & Oosterlee, 2008) `heston_price()` uses, not a different
+  numerical technique
+- `cos_pricing_internal.hpp` (new): `heston_log_return_cf`, `chi`, `psi`,
+  and the `clog1p` numerical-stability helper, pulled out of `heston.cpp`
+  verbatim into a shared `deriv::detail` header so `bates.cpp` could
+  reuse Heston's numerically-hardened characteristic function directly —
+  called with an adjusted drift (`r - lambda*k`) rather than re-derived —
+  instead of copy-pasting that fragile complex-analysis code a second
+  time. Confirmed behavior-preserving: `heston.cpp`'s own tests
+  (50 assertions) pass unchanged after the refactor
+- The jump component is a separate multiplicative term in the
+  characteristic function (`jump_log_return_cf`, the standard
+  compound-Poisson CF identity `exp(lambda*tau*(phi_X(u)-1))`), so
+  `bates_log_return_cf(u) = heston_log_return_cf(u, r-lambda*k) *
+  jump_log_return_cf(u)` — no re-derivation of Heston's own CF math, just
+  composition
+- `bates_mc.hpp`/`bates_mc.cpp`: an independent Monte Carlo cross-check,
+  mirroring `heston_mc.cpp` exactly for the variance-process stepping
+  (full-truncation Euler) and adding a compound Poisson jump
+  (`std::poisson_distribution(lambda*dt)` jump count,
+  `std::normal_distribution(jump_mean, jump_vol)` jump sizes) to the
+  log-price increment each step
+- Nine new tests (`tests/test_main.cpp`, `[bates]` tag): jump-intensity-
+  zero collapses to Heston exactly, the deterministic-variance limit
+  collapses to closed-form Merton jump-diffusion, and the independent SDE
+  Monte Carlo agrees with the COS closed form
+
+**Validated against:**
+- Heston collapse (`jump_intensity = 0`): exact match to
+  `heston_price()`, margin `1e-9`, across ATM/OTM/call/put/BTC-scale
+  scenarios — with nonzero `jump_mean`/`jump_vol` left in the params
+  deliberately, to confirm they're inert (not just that "all zeros"
+  happens to work)
+- Deterministic-variance limit (`xi = 1e-6`, `v0 = theta`) vs. an
+  independent closed-form Merton (1976) series
+  (`merton_jump_diffusion_price()` in the test file — a Poisson-weighted
+  sum of Black-Scholes prices, sharing no code with `bates.cpp` or
+  `heston.cpp`): agreement within 0.1% across five scenarios spanning
+  ATM/OTM, positive/negative mean jump, and BTC-scale frequent jumps
+- Independent SDE + jump Monte Carlo (60,000 paths, antithetic, fixed
+  seed) vs. the COS closed form: agreement within 5 standard errors
+  across three scenarios, including a BTC-like high-vol-of-vol,
+  frequent-jump case (COS 9926.93 vs. MC 9840.09 ± 70.23 — comfortably
+  inside the bound)
+
+**A bug found in the test oracle, not in the model — worth documenting
+honestly:** the first version of the closed-form Merton series
+(`merton_jump_diffusion_price()`) disagreed with `bates_price()`'s
+deterministic-variance-limit output by about 0.55% (13.357939 vs.
+13.431517) — small enough to look like truncation error, too large to
+actually be truncation error. Widening the COS truncation window (`L`
+14→30) and term count (`N` 256→2048) left `bates_price()`'s output
+unchanged to the last printed digit, ruling that out immediately. What
+found the real bug was building a from-scratch, fully independent
+verification chain rather than trusting either side: (1) both
+`heston_log_return_cf` and the full `bates_log_return_cf` were checked
+directly against their hand-derived theoretical characteristic functions
+— diffs of `1e-7`-`1e-9`, i.e. correct; (2) a standalone COS pricer using
+the exact theoretical CF (zero dependency on `bates.cpp`/`heston.cpp`)
+reproduced `bates_price()`'s number exactly, proving the COS/quadrature
+logic itself wasn't the problem; (3) the decisive check — a direct
+20-million-path Monte Carlo simulation of the actual Merton jump-diffusion
+SDE (`std::poisson_distribution` + `std::normal_distribution`, no CF, no
+COS series anywhere) gave 13.360144, matching `bates_price()`'s
+13.357939 within Monte Carlo noise and matching the "Merton series"
+formula nowhere close. That pinned the bug to the series formula, not the
+model. Root cause: `black_scholes_price()` called with `rate=r_n` (the
+jump-adjusted rate each series term needs for its forward/terminal
+distribution) also silently uses `r_n` as the discount rate — but the
+true discount rate for every term is always `r`, not `r_n`. The fix
+rescales each term's raw Black-Scholes output by `exp((r_n - r) * T)`
+before summing, which swaps the wrong `e^{-r_n*T}` discount factor for
+the correct `e^{-r*T}` one while leaving the `r_n`-driven forward alone —
+after which the series matches `bates_price()` exactly (13.357939 both
+ways). The lesson generalizes past this one function: a closed-form
+"reference" formula is not automatically more trustworthy than the model
+under test just because it's independent code, and the way to actually
+resolve a small, real-looking discrepancy is to add a third, structurally
+different check (here, the direct SDE Monte Carlo) rather than assume
+which of the two disagreeing numbers is correct.
+
+**Why jumps get a separate CF term instead of folding into Heston's own
+variance process:** a jump is a discontinuous, instantaneous move in the
+log-price — nothing in Heston's SDEs (`dS`, `dv`) can produce that no
+matter how `xi` or `kappa` are tuned, since both are continuous
+diffusions. The compound Poisson process is the standard, minimal way to
+add genuine discontinuities on top of a diffusion, and because Poisson
+jump arrivals and Brownian diffusion are independent processes by
+construction, their joint characteristic function is exactly the product
+of the two marginal characteristic functions — which is what makes
+`bates_log_return_cf` a one-line multiplication rather than a new
+derivation.
+
+**Defend this:**
+Can explain why `bates_price()` calls `heston_log_return_cf` with
+`r - lambda*k` instead of the raw rate `r`: the jump compensator `k =
+E[Y] = exp(jump_mean + 0.5*jump_vol^2) - 1` is subtracted from the drift
+so that `E[S_T] = S0*exp((r-q)*T)` still holds exactly — the same
+no-arbitrage martingale condition Heston/Black-Scholes satisfy without
+jumps — even though the jump process on its own has a nonzero expected
+log-price contribution. Can explain why puts are priced directly and
+calls via put-call parity, same as Heston: the put's COS payoff
+coefficients integrate over `[a, 0]` and stay `O(strike)` regardless of
+truncation width, while a far-OTM call priced directly (or derived from a
+far-ITM put) can lose precision to catastrophic cancellation — this
+project already found and fixed that exact bug once, in Heston, and Bates
+reuses the fix rather than reintroducing the risk. Can name the honest
+limitation: jump sizes are assumed i.i.d. lognormal (Merton's own
+assumption) with a single intensity/mean/vol triple — no
+time-varying jump intensity, no separate up/down jump distributions, and
+no jumps in the variance process itself (some later extensions, e.g.
+Duffie-Pan-Singleton, add those; this implementation deliberately doesn't
+chase that generality without a concrete need for it).
