@@ -12,14 +12,22 @@ data — validated against a real exchange, not just textbook values.
 
 **[roberto0607.github.io/deriv-engine](https://roberto0607.github.io/deriv-engine/)**
 — the actual C++ (Black-Scholes, binomial tree, Monte Carlo, Heston,
-plus a dedicated card for Asian and Barrier options) compiled to
-WebAssembly via Emscripten and run directly in the browser. Every
-number on that page comes out of the real compiled engine, not a JS
-reimplementation, and the Heston card's kappa/xi/rho are calibrated
-against the real Deribit chain by CI on every push (see
-`tools/calibrate_heston.cpp`), not hand-typed. The exotics card goes a
-step further and runs its own validation checks (closed form, in/out
-parity) live in the browser, not just a price.
+Bates, plus dedicated cards for Asian/Barrier options, the Phase 15
+historical backtest, and Phase 16 portfolio VaR/stress testing)
+compiled to WebAssembly via Emscripten and run directly in the
+browser. Every number on that page comes out of the real compiled
+engine, not a JS reimplementation, and the Heston/Bates cards'
+kappa/theta/xi/rho are calibrated against the real Deribit chain by
+CI on every push (see `tools/calibrate_heston.cpp`), not hand-typed.
+The exotics card goes a step further and runs its own validation
+checks (closed form, in/out parity) live in the browser, not just a
+price. The backtest and VaR cards go further still: they fetch the
+real 16-year committed price history
+(`docs/btc_price_history.csv`) over HTTP, parse it with this
+project's actual C++ CSV parser compiled to WASM (not JavaScript),
+and run the real rolling-window backtest and historical/Monte Carlo
+VaR live in your browser — reproducing the exact numbers in the
+table below, not a canned screenshot.
 
 ## Headline result
 

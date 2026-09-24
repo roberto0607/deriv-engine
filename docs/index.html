@@ -226,6 +226,40 @@
   .calc-greeks .gval{font-family:var(--mono);font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;}
   .calc-note{font-size:12.5px;color:var(--text-faint);}
   .calc-note code{color:var(--teal);}
+
+  /* ---- pill toggles (window length, scenario picker) ---- */
+  .pill-row{display:flex;gap:8px;flex-wrap:wrap;}
+  .pill{
+    font-family:var(--mono);font-size:12.5px;color:var(--text-dim);
+    background:var(--bg-inset);border:1px solid var(--border);border-radius:20px;
+    padding:7px 14px;cursor:pointer;
+  }
+  .pill:hover{border-color:var(--teal);}
+  .pill.active{background:var(--amber);border-color:var(--amber);color:#1a1206;font-weight:600;}
+
+  /* ---- bar charts (backtest mean pnl, VaR comparison) ---- */
+  .bars{display:flex;flex-direction:column;gap:10px;}
+  .bar-row{display:grid;grid-template-columns:130px 1fr 90px;align-items:center;gap:10px;}
+  .bar-row .bl{font-family:var(--mono);font-size:12px;color:var(--text-dim);}
+  .bar-track{position:relative;height:20px;background:var(--bg-inset);border-radius:4px;overflow:hidden;}
+  .bar-fill{position:absolute;top:0;bottom:0;left:0;border-radius:4px;background:var(--amber);}
+  .bar-fill.teal{background:var(--teal);}
+  .bar-fill.red{background:var(--red);}
+  .bar-row .bv{font-family:var(--mono);font-size:12.5px;color:var(--text);text-align:right;font-variant-numeric:tabular-nums;}
+
+  /* ---- sparkline (per-window backtest pnl) ---- */
+  .sparkline{width:100%;height:70px;display:block;}
+
+  /* ---- stress result tiles ---- */
+  .stress-grid{
+    display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);
+    border:1px solid var(--border);border-radius:10px;overflow:hidden;
+  }
+  @media (max-width:640px){ .stress-grid{grid-template-columns:1fr;} }
+  .stress-cell{background:var(--bg-inset);padding:14px 16px;display:flex;flex-direction:column;gap:4px;}
+  .stress-cell .slabel{font-family:var(--mono);font-size:11px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.03em;}
+  .stress-cell .sval{font-family:var(--mono);font-size:15px;color:var(--text);font-variant-numeric:tabular-nums;}
+  .stress-cell .sval.loss{color:var(--red);}
 </style>
 </head>
 <body>
@@ -234,7 +268,7 @@
   <header>
     <div class="kicker">C++20 · options pricing engine</div>
     <h1>deriv&#8209;engine</h1>
-    <p class="tagline">Ten independent option-pricing methods, hand-built from the Black-Scholes PDE up through reverse-mode AAD and Heston stochastic vol, calibrated against a real Deribit BTC options chain — not synthetic data.</p>
+    <p class="tagline">Thirteen independent option-pricing and risk methods, hand-built from the Black-Scholes PDE up through reverse-mode AAD, Heston stochastic vol, and Bates jump-diffusion, calibrated against a real Deribit BTC options chain and backtested against 16 years of real BTC price history — not synthetic data.</p>
     <div class="badges">
       <span class="badge"><span class="dot"></span>CI passing · <span id="stat-tests">34</span> tests / <span id="stat-assertions">76</span> assertions</span>
       <span class="badge">C++20 · CMake · Catch2</span>
@@ -248,7 +282,7 @@
       <div class="stat"><div class="stat-val" id="stat-convergence">96.8%</div><div class="stat-label">of contracts converged during IV calibration</div></div>
       <div class="stat"><div class="stat-val" id="stat-gap">0.3pp</div><div class="stat-label">typical (median) gap vs. exchange-quoted IV</div></div>
       <div class="stat"><div class="stat-val" id="stat-contracts">904</div><div class="stat-label">real BTC contracts pulled from Deribit's public chain</div></div>
-      <div class="stat"><div class="stat-val">10</div><div class="stat-label">independent pricing methods, cross-validated against each other</div></div>
+      <div class="stat"><div class="stat-val">13</div><div class="stat-label">independent pricing &amp; risk methods, cross-validated against each other</div></div>
     </div>
     <div style="height:14px"></div>
     <div class="lede">
@@ -261,7 +295,7 @@
   </section>
 
   <section>
-    <div class="section-head"><span class="section-num">02</span><h2>Ten pricing methods, cross-validated</h2></div>
+    <div class="section-head"><span class="section-num">02</span><h2>Thirteen methods, cross-validated</h2></div>
     <p class="section-sub">Every method is checked against at least one independent method or real data, not just against itself.</p>
     <div class="table-scroll">
       <table>
@@ -277,6 +311,9 @@
           <tr><td class="method">Crank-Nicolson PDE</td><td>Finite-difference solver, tridiagonal system</td><td class="validated">Stays stable where the explicit scheme provably diverges</td></tr>
           <tr><td class="method">IV calibration</td><td>Newton-Raphson solve for implied vol using vega, bisection fallback near zero vega</td><td class="validated">96.8% convergence / 0.3pp typical gap vs. real Deribit quotes</td></tr>
           <tr><td class="method">Heston (stochastic vol)</td><td>COS-method pricing under vol-of-vol, mean reversion, and spot-vol correlation</td><td class="validated">Collapses exactly to Black-Scholes in the deterministic-variance limit; put-call parity holds directly on Heston prices (independent of BS)</td></tr>
+          <tr><td class="method">Bates (Heston + jumps)</td><td>Adds discontinuous jumps on top of Heston's diffusion, reusing its characteristic function</td><td class="validated">Collapses exactly to Heston at zero jump intensity; collapses to closed-form Merton (1976) in the deterministic-variance limit; cross-checked against a full SDE Monte Carlo</td></tr>
+          <tr><td class="method">Historical backtest</td><td>Do BS/Heston/Bates hedge ratios track <i>real</i> BTC price history, day by day</td><td class="validated">Rolling 30-day delta-hedged calls over 16 years of real BTC prices (195 windows) — try it live below</td></tr>
+          <tr><td class="method">Portfolio VaR &amp; stress test</td><td>Real historical simulation and Monte Carlo (Bates SDE) VaR, cross-validated against each other</td><td class="validated">Agree within ~2.3x at 99%; both catch the delta-normal baseline's blind spot to gamma — try it live below</td></tr>
         </tbody>
       </table>
     </div>
@@ -477,6 +514,113 @@
     </div>
   </section>
 
+  <section>
+    <div class="section-head"><span class="section-num">08</span><h2>Bates: what jumps add on top of Heston</h2></div>
+    <p class="section-sub">Heston alone can only move price through continuous diffusion — however wild the vol-of-vol. Bates adds a compound Poisson jump process on top (<code style="font-family:var(--mono);color:var(--teal)">src/bates.cpp</code>), so a sudden 20%-in-an-afternoon move is actually in the model, not just approximated by cranking up sigma.</p>
+    <div class="calc-card">
+      <div class="calc-status ready" id="bates-status"><span class="pulse"></span><span>uses the same compiled engine as the calculators above</span></div>
+
+      <div class="calc-grid">
+        <div class="field"><label for="bt-spot">Spot ($)</label><input id="bt-spot" type="number" value="77000" step="1000"></div>
+        <div class="field"><label for="bt-strike">Strike ($)</label><input id="bt-strike" type="number" value="77000" step="1000"></div>
+        <div class="field"><label for="bt-days">Days to expiry</label><input id="bt-days" type="number" value="90" step="1" min="1"></div>
+        <div class="field"><label for="bt-vol">Base volatility (%)</label><input id="bt-vol" type="number" value="75" step="1" min="0.1"></div>
+        <div class="field"><label for="bt-type">Type</label>
+          <select id="bt-type"><option value="0">Call</option><option value="1">Put</option></select>
+        </div>
+        <div class="field"><label for="bt-jump-intensity">Jump intensity (per yr)</label><input id="bt-jump-intensity" type="number" value="3.46" step="0.1" min="0"></div>
+        <div class="field"><label for="bt-jump-mean">Jump mean (log, %)</label><input id="bt-jump-mean" type="number" value="-0.08" step="0.5"></div>
+        <div class="field"><label for="bt-jump-vol">Jump vol (log, %)</label><input id="bt-jump-vol" type="number" value="27.3" step="1" min="0"></div>
+      </div>
+
+      <div class="calc-results">
+        <div class="calc-result"><div class="rlabel">Heston (no jumps)</div><div class="rval" id="res-heston-only">—</div><div class="rsub">same v0/kappa/theta/xi/rho</div></div>
+        <div class="calc-result"><div class="rlabel">Bates (with jumps)</div><div class="rval" id="res-bates">—</div><div class="rsub">Heston + the jump params above</div></div>
+        <div class="calc-result"><div class="rlabel">Jump premium</div><div class="rval" id="res-jump-premium">—</div><div class="rsub" id="res-jump-premium-sub">what jumps add to the price</div></div>
+        <div class="calc-result"><div class="rlabel">Zero-jump check</div><div class="rval" id="res-zero-jump-check">—</div><div class="rsub">intensity=0 should exactly match Heston</div></div>
+      </div>
+
+      <div class="calc-note" id="bates-note">Jump params default to the real values estimated from BTC's own price history (Phase 15: a simple 4-sigma threshold on daily log returns — see docs/numerics.md) — not arbitrary. Set intensity to 0 to confirm Bates collapses exactly onto Heston, the same identity the test suite checks.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><span class="section-num">09</span><h2>Historical backtest: does jump-awareness actually help?</h2></div>
+    <p class="section-sub">Rolls a fresh at-the-money call every <code style="font-family:var(--mono);color:var(--teal)">window_days</code> and delta-hedges it daily against the <i>real</i> BTC price path — not a simulation (<code style="font-family:var(--mono);color:var(--teal)">src/backtest.cpp</code>). Runs live, right here, over the full committed 16-year history (<code style="font-family:var(--mono);color:var(--teal)">data/btc_price_history.csv</code>), for all three models.</p>
+    <div class="calc-card">
+      <div class="calc-status" id="history-status"><span class="pulse"></span><span id="history-status-text">loading real price history…</span></div>
+
+      <div class="field"><label>Window length</label>
+        <div class="pill-row" id="bt-window-pills">
+          <button class="pill" data-days="7">7 days</button>
+          <button class="pill active" data-days="30">30 days</button>
+          <button class="pill" data-days="60">60 days</button>
+          <button class="pill" data-days="90">90 days</button>
+        </div>
+      </div>
+
+      <div class="field" style="align-items:flex-start;">
+        <button class="calc-run" id="backtest-run-btn" disabled>Run backtest on real history →</button>
+      </div>
+
+      <div class="bars" id="backtest-bars" style="display:none;">
+        <div class="bar-row"><span class="bl">Black-Scholes</span><div class="bar-track"><div class="bar-fill" id="bar-bs"></div></div><span class="bv" id="bv-bs">—</span></div>
+        <div class="bar-row"><span class="bl">Heston</span><div class="bar-track"><div class="bar-fill teal" id="bar-heston"></div></div><span class="bv" id="bv-heston">—</span></div>
+        <div class="bar-row"><span class="bl">Bates</span><div class="bar-track"><div class="bar-fill" id="bar-bates" style="background:var(--green);"></div></div><span class="bv" id="bv-bates">—</span></div>
+      </div>
+      <div class="calc-note" id="backtest-bars-note" style="display:none;">Mean hedge P&amp;L in basis points of starting spot (bar length), stdev shown alongside — this is the same metric README.md's Phase 15 table reports, computed live instead of hand-typed.</div>
+
+      <svg class="sparkline" id="backtest-sparkline" viewBox="0 0 760 70" style="display:none;" role="img" aria-label="Per-window hedge P&amp;L, most recent selected model"></svg>
+      <div class="calc-note" id="backtest-sparkline-note" style="display:none;"></div>
+
+      <div class="calc-note" id="backtest-note">Real calibrated Heston structural parameters (kappa/theta/xi/rho) come from <code style="font-family:var(--mono);color:var(--teal)">tools/calibrate_heston.cpp</code>'s fit to the real Deribit snapshot — the same numbers the README's Phase 15 table used, held fixed across the whole backtest while each window re-estimates its own volatility from trailing realized vol.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><span class="section-num">10</span><h2>Portfolio VaR &amp; real historical stress testing</h2></div>
+    <p class="section-sub">A short strangle/straddle book, partially delta-hedged (<code style="font-family:var(--mono);color:var(--teal)">make_example_market_maker_book</code> in <code style="font-family:var(--mono);color:var(--teal)">src/portfolio.cpp</code>) — real short-gamma risk, not a toy. VaR computed three independent ways; stress-tested against three real BTC crashes.</p>
+    <div class="calc-card">
+      <div class="calc-status" id="var-status"><span class="pulse"></span><span id="var-status-text">waiting on real price history…</span></div>
+
+      <div class="calc-grid">
+        <div class="field"><label for="var-spot">Spot ($)</label><input id="var-spot" type="number" value="77000" step="1000"></div>
+        <div class="field"><label for="var-vol">Annualized vol (%)</label><input id="var-vol" type="number" value="75" step="1" min="1"></div>
+        <div class="field"><label for="var-paths">Monte Carlo paths</label>
+          <select id="var-paths"><option value="5000">5,000 (fast)</option><option value="20000" selected>20,000</option><option value="50000">50,000 (slower)</option></select>
+        </div>
+        <div class="field" style="justify-content:flex-end;">
+          <button class="calc-run" id="var-run-btn" disabled>Compute VaR →</button>
+        </div>
+      </div>
+
+      <div class="bars" id="var-bars" style="display:none;">
+        <div class="bar-row"><span class="bl">Historical (95% / 99%)</span><div class="bar-track"><div class="bar-fill" id="bar-hist95"></div></div><span class="bv" id="bv-hist95">—</span></div>
+        <div class="bar-row"><span class="bl"></span><div class="bar-track"><div class="bar-fill" id="bar-hist99"></div></div><span class="bv" id="bv-hist99">—</span></div>
+        <div class="bar-row"><span class="bl">Monte Carlo (95% / 99%)</span><div class="bar-track"><div class="bar-fill teal" id="bar-mc95"></div></div><span class="bv" id="bv-mc95">—</span></div>
+        <div class="bar-row"><span class="bl"></span><div class="bar-track"><div class="bar-fill teal" id="bar-mc99"></div></div><span class="bv" id="bv-mc99">—</span></div>
+        <div class="bar-row"><span class="bl">Delta-normal (95% / 99%)</span><div class="bar-track"><div class="bar-fill red" id="bar-dn95"></div></div><span class="bv" id="bv-dn95">—</span></div>
+        <div class="bar-row"><span class="bl"></span><div class="bar-track"><div class="bar-fill red" id="bar-dn99"></div></div><span class="bv" id="bv-dn99">—</span></div>
+      </div>
+      <div class="calc-note" id="var-note">Click "Compute VaR" — historical simulation replays every real overlapping move in the price history; Monte Carlo simulates forward under the calibrated Bates SDE; delta-normal is the fast textbook approximation, shown specifically because it can't see the book's gamma.</div>
+
+      <div style="height:6px"></div>
+      <div class="field"><label>Real historical crash to replay</label>
+        <div class="pill-row" id="stress-pills">
+          <button class="pill active" data-scenario="0">2020 COVID crash</button>
+          <button class="pill" data-scenario="1">2022 FTX collapse</button>
+          <button class="pill" data-scenario="2">2021-22 bear market</button>
+        </div>
+      </div>
+      <div class="stress-grid" id="stress-grid" style="display:none;">
+        <div class="stress-cell"><div class="slabel">Spot move</div><div class="sval" id="stress-spot-move">—</div></div>
+        <div class="stress-cell"><div class="slabel">Book value before → after</div><div class="sval" id="stress-value">—</div></div>
+        <div class="stress-cell"><div class="slabel">P&amp;L</div><div class="sval loss" id="stress-pnl">—</div></div>
+      </div>
+      <div class="calc-note" id="stress-note"></div>
+    </div>
+  </section>
+
   <footer>
     <div class="stack-line">stack: <span>C++20 · CMake (Ninja) · Catch2 v3 · nlohmann/json · GitHub Actions CI</span></div>
     <div class="scope-note">Scope is BTC options specifically: dividend yield is fixed at q=0 because Bitcoin has no earnings to distribute — the mathematically correct assumption for this asset, not a simplification. This is a pricing and risk-analysis engine; it does not predict market direction.</div>
@@ -503,8 +647,13 @@
   // file:// preview) and get overwritten with the real calibrated values
   // fetched further down — see that block for how those numbers are
   // produced (tools/calibrate_heston.cpp, run by CI against the real
-  // Deribit snapshot, same pattern as stats.json).
-  var hestonKappa = 2.0, hestonXi = 0.5, hestonRho = -0.6;
+  // Deribit snapshot, same pattern as stats.json). hestonTheta is used
+  // by the Bates card and the backtest/VaR cards further down (theta is
+  // also in heston_calibration.json — the same real calibration run
+  // tools/run_backtest.cpp's own hardcoded theta comes from), unlike the
+  // main calculator's Heston column above, which deliberately derives
+  // theta from its own flat-vol input instead (see price() below).
+  var hestonKappa = 2.0, hestonTheta = 0.16, hestonXi = 0.5, hestonRho = -0.6;
 
   function setStatus(cls, text){
     statusEl.className = 'calc-status ' + cls;
@@ -756,11 +905,298 @@
     runBtn.disabled = false;
     price();
     priceExotic();
+    priceBates();
+    loadRealHistory();
   }).catch(function(err){
     setStatus('err', 'engine failed to load: ' + (err && err.message ? err.message : 'unknown error'));
   });
 
   runBtn.addEventListener('click', price);
+
+  // ---- Bates (Phase 14): Heston vs. Heston+jumps, side by side ----
+  // This card has no explicit run button -- it reprices live on every
+  // input change (listeners attached below), the same way it would feel
+  // most natural to explore what each jump parameter does.
+
+  function fmtBps(x){
+    if (!isFinite(x)) return '—';
+    return (x >= 0 ? '+' : '') + x.toLocaleString('en-US', {maximumFractionDigits: 2, minimumFractionDigits: 2}) + ' bps';
+  }
+  function fmtPct(x){
+    if (!isFinite(x)) return '—';
+    return (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
+  }
+
+  function priceBates(){
+    if (!Module) return;
+    var spot = parseFloat(document.getElementById('bt-spot').value);
+    var strike = parseFloat(document.getElementById('bt-strike').value);
+    var days = parseFloat(document.getElementById('bt-days').value);
+    var vol = parseFloat(document.getElementById('bt-vol').value) / 100;
+    var type = parseInt(document.getElementById('bt-type').value, 10);
+    var jumpIntensity = parseFloat(document.getElementById('bt-jump-intensity').value);
+    var jumpMean = parseFloat(document.getElementById('bt-jump-mean').value) / 100;
+    var jumpVol = parseFloat(document.getElementById('bt-jump-vol').value) / 100;
+    var T = Math.max(days, 1) / 365;
+    if (!isFinite(spot) || !isFinite(strike) || !isFinite(vol) || vol <= 0) return;
+
+    var v0 = vol * vol;
+    // Same real calibrated kappa/theta/xi/rho the Heston card above uses
+    // (fetched from heston_calibration.json further down; illustrative
+    // defaults until that fetch resolves) -- theta here comes from that
+    // same fetch (see the extended handler below), not re-derived from
+    // this card's own vol input, so Bates' "no jumps" column is a true
+    // apples-to-apples Heston price, not a different parameterization.
+    var heston = Module.ccall('bridge_heston_price', 'number',
+      ['number','number','number','number','number','number','number','number','number','number','number'],
+      [spot, 0, 0, strike, T, type, v0, hestonKappa, hestonTheta, hestonXi, hestonRho]);
+    document.getElementById('res-heston-only').textContent = fmtUSD(heston);
+
+    var bates = Module.ccall('bridge_bates_price', 'number',
+      ['number','number','number','number','number','number','number','number','number','number','number','number','number','number'],
+      [spot, 0, 0, strike, T, type, v0, hestonKappa, hestonTheta, hestonXi, hestonRho, jumpIntensity, jumpMean, jumpVol]);
+    document.getElementById('res-bates').textContent = fmtUSD(bates);
+
+    var premium = bates - heston;
+    document.getElementById('res-jump-premium').textContent = (premium >= 0 ? '+' : '−') + fmtUSD(Math.abs(premium));
+    document.getElementById('res-jump-premium-sub').textContent = fmtPct(heston !== 0 ? premium / heston : NaN) + ' vs. Heston alone';
+
+    // Re-price at jump_intensity=0 to show the exact-collapse identity
+    // live -- the same property tests/test_main.cpp's "[bates]" suite
+    // checks, just run in your browser instead of Catch2.
+    var batesZero = Module.ccall('bridge_bates_price', 'number',
+      ['number','number','number','number','number','number','number','number','number','number','number','number','number','number'],
+      [spot, 0, 0, strike, T, type, v0, hestonKappa, hestonTheta, hestonXi, hestonRho, 0, 0, Math.max(jumpVol, 1e-6)]);
+    var gap = Math.abs(batesZero - heston);
+    document.getElementById('res-zero-jump-check').textContent = gap < 1e-6 ? 'exact match ✓' : fmtUSD(gap) + ' gap';
+  }
+
+  ['bt-spot','bt-strike','bt-days','bt-vol','bt-type','bt-jump-intensity','bt-jump-mean','bt-jump-vol'].forEach(function(id){
+    document.getElementById(id).addEventListener('input', priceBates);
+    document.getElementById(id).addEventListener('change', priceBates);
+  });
+
+  // ---- Real price history (Phase 15/16): loaded once, shared by the ----
+  // ---- backtest and VaR/stress cards below.                        ----
+  var historyLoaded = false;
+  var historyStatusEl = document.getElementById('history-status');
+  var historyStatusText = document.getElementById('history-status-text');
+  var backtestRunBtn = document.getElementById('backtest-run-btn');
+  var varRunBtn = document.getElementById('var-run-btn');
+  var varStatusText = document.getElementById('var-status-text');
+
+  // Same fixed jump parameters tools/run_backtest.cpp hardcodes -- a
+  // one-time estimate from a simple 4-sigma threshold on daily log
+  // returns (see docs/numerics.md Phase 15), not regenerated by CI the
+  // way kappa/theta/xi/rho are, so they're not fetched from a JSON file
+  // here either. Kept as the backtest/VaR cards' fixed values (separate
+  // from the Bates card's own editable jump fields above, which default
+  // to the same numbers but can be changed to explore).
+  var REAL_JUMP_INTENSITY = 3.4626461121463663, REAL_JUMP_MEAN = -0.000773771446447099, REAL_JUMP_VOL = 0.27331845903521157;
+
+  function loadRealHistory(){
+    fetch('btc_price_history.csv', {cache: 'no-store'}).then(function(res){
+      if (!res.ok) throw new Error('btc_price_history.csv not found (HTTP ' + res.status + ')');
+      return res.text();
+    }).then(function(csvText){
+      var rows = Module.ccall('bridge_load_price_history', 'number', ['string'], [csvText]);
+      if (rows <= 0) throw new Error('failed to parse btc_price_history.csv');
+      historyLoaded = true;
+      historyStatusEl.className = 'calc-status ready';
+      historyStatusText.textContent = rows.toLocaleString('en-US') + ' real daily BTC prices loaded (data/btc_price_history.csv, 2010-2026) — parsed by the actual C++ CSV parser, not JavaScript';
+      backtestRunBtn.disabled = false;
+      varRunBtn.disabled = false;
+      varStatusText.textContent = 'ready — click Compute VaR, or pick a crash below';
+      document.getElementById('var-status').className = 'calc-status ready';
+      runStress();  // show the default (COVID) scenario immediately, no click needed
+    }).catch(function(err){
+      historyStatusEl.className = 'calc-status err';
+      historyStatusText.textContent = 'could not load real price history: ' + (err && err.message ? err.message : 'unknown error');
+      varStatusText.textContent = 'unavailable — price history failed to load';
+    });
+  }
+
+  // ---- Historical backtest (Phase 15) ----
+  var backtestWindowDays = 30;
+  document.querySelectorAll('#bt-window-pills .pill').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('#bt-window-pills .pill').forEach(function(b){ b.classList.remove('active'); });
+      btn.classList.add('active');
+      backtestWindowDays = parseInt(btn.getAttribute('data-days'), 10);
+    });
+  });
+
+  var MODEL_NAMES = ['Black-Scholes', 'Heston', 'Bates'];
+  var MODEL_BAR_IDS = [['bar-bs','bv-bs'], ['bar-heston','bv-heston'], ['bar-bates','bv-bates']];
+
+  function runBacktest(){
+    if (!Module || !historyLoaded) return;
+    backtestRunBtn.disabled = true;
+    backtestRunBtn.textContent = 'Running on real 16-year history…';
+
+    // setTimeout so the button's disabled/label change actually paints
+    // before the (synchronous, ~1-2s) WASM computation blocks the main
+    // thread -- there's no worker here, so this is the whole trick.
+    setTimeout(function(){
+      var outPtr = Module._malloc(3 * 8);
+      var results = [];
+      for (var model = 0; model < 3; model++){
+        var ok = Module.ccall('bridge_run_backtest', 'number',
+          ['number','number','number','number','number','number','number','number','number','number','number'],
+          [model, backtestWindowDays, 30, hestonKappa, hestonTheta, hestonXi, hestonRho,
+           REAL_JUMP_INTENSITY, REAL_JUMP_MEAN, REAL_JUMP_VOL, outPtr]);
+        if (!ok) { results.push(null); continue; }
+        results.push({
+          mean: Module.getValue(outPtr, 'double'),
+          stdev: Module.getValue(outPtr + 8, 'double'),
+          windows: Module.getValue(outPtr + 16, 'double')
+        });
+        if (model === 2) {  // Bates -- capture its per-window path for the sparkline below
+          var n = Module.ccall('bridge_backtest_window_count', 'number', [], []);
+          var pnls = [];
+          for (var i = 0; i < n; i++) pnls.push(Module.ccall('bridge_backtest_window_pnl_bps', 'number', ['number'], [i]));
+          drawSparkline(pnls);
+        }
+      }
+      Module._free(outPtr);
+
+      var maxAbs = 1;
+      results.forEach(function(r){ if (r) maxAbs = Math.max(maxAbs, Math.abs(r.mean)); });
+
+      for (var m = 0; m < 3; m++){
+        var r = results[m];
+        var barEl = document.getElementById(MODEL_BAR_IDS[m][0]);
+        var valEl = document.getElementById(MODEL_BAR_IDS[m][1]);
+        if (!r) { valEl.textContent = 'n/a'; barEl.style.width = '0%'; continue; }
+        barEl.style.width = Math.max(2, Math.abs(r.mean) / maxAbs * 100) + '%';
+        valEl.textContent = fmtBps(r.mean) + ' (σ ' + r.stdev.toFixed(0) + ')';
+      }
+
+      document.getElementById('backtest-bars').style.display = '';
+      document.getElementById('backtest-bars-note').style.display = '';
+      document.getElementById('backtest-sparkline').style.display = '';
+      document.getElementById('backtest-sparkline-note').style.display = '';
+      document.getElementById('backtest-sparkline-note').textContent =
+        results[2] ? 'Bates’ hedge P&L across each of its ' + results[2].windows + ' real ' + backtestWindowDays + '-day windows (basis points of that window’s starting spot) — the shape this project’s "jumps add real tail risk" finding comes from, not just the summary mean.' : '';
+
+      backtestRunBtn.disabled = false;
+      backtestRunBtn.textContent = 'Run backtest on real history →';
+    }, 20);
+  }
+
+  function drawSparkline(pnls){
+    var svg = document.getElementById('backtest-sparkline');
+    if (!pnls.length) { svg.innerHTML = ''; return; }
+    var w = 760, h = 70, mid = h / 2;
+    var maxAbs = Math.max(1, Math.max.apply(null, pnls.map(Math.abs)));
+    var barW = w / pnls.length;
+    var bars = pnls.map(function(v, i){
+      var barH = Math.abs(v) / maxAbs * (h / 2 - 4);
+      var x = i * barW;
+      var y = v >= 0 ? mid - barH : mid;
+      var color = v >= 0 ? 'var(--green)' : 'var(--red)';
+      return '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + Math.max(0.6, barW - 0.4).toFixed(1) +
+        '" height="' + Math.max(0.5, barH).toFixed(1) + '" fill="' + color + '" />';
+    }).join('');
+    svg.innerHTML = '<line x1="0" y1="' + mid + '" x2="' + w + '" y2="' + mid + '" stroke="var(--border)" stroke-width="1"/>' + bars;
+  }
+
+  backtestRunBtn.addEventListener('click', runBacktest);
+
+  // ---- Portfolio VaR (Phase 16) ----
+  var VAR_BAR_IDS = {hist95:['bar-hist95','bv-hist95'], hist99:['bar-hist99','bv-hist99'],
+                      mc95:['bar-mc95','bv-mc95'], mc99:['bar-mc99','bv-mc99'],
+                      dn95:['bar-dn95','bv-dn95'], dn99:['bar-dn99','bv-dn99']};
+
+  function runVar(){
+    if (!Module || !historyLoaded) return;
+    var spot = parseFloat(document.getElementById('var-spot').value);
+    var vol = parseFloat(document.getElementById('var-vol').value) / 100;
+    var paths = parseInt(document.getElementById('var-paths').value, 10);
+    if (!isFinite(spot) || !isFinite(vol) || vol <= 0) return;
+
+    varRunBtn.disabled = true;
+    varRunBtn.textContent = 'Computing…';
+
+    setTimeout(function(){
+      var outPtr = Module._malloc(10 * 8);
+      var ok = Module.ccall('bridge_run_var', 'number',
+        ['number','number','number','number','number','number','number','number','number','number','number','number'],
+        [spot, vol, paths, 42, hestonKappa, hestonTheta, hestonXi, hestonRho, REAL_JUMP_INTENSITY, REAL_JUMP_MEAN, REAL_JUMP_VOL, outPtr]);
+
+      if (ok){
+        var vals = {
+          hist95: Module.getValue(outPtr, 'double'), hist99: Module.getValue(outPtr + 8, 'double'),
+          mc95: Module.getValue(outPtr + 24, 'double'), mc99: Module.getValue(outPtr + 32, 'double'),
+          dn95: Module.getValue(outPtr + 48, 'double'), dn99: Module.getValue(outPtr + 56, 'double')
+        };
+        var unhedgedDelta = Module.getValue(outPtr + 64, 'double');
+        var hedgedDelta = Module.getValue(outPtr + 72, 'double');
+        var maxAbs = 1;
+        Object.keys(vals).forEach(function(k){ maxAbs = Math.max(maxAbs, vals[k]); });
+        Object.keys(vals).forEach(function(k){
+          var ids = VAR_BAR_IDS[k];
+          document.getElementById(ids[0]).style.width = Math.max(2, vals[k] / maxAbs * 100) + '%';
+          document.getElementById(ids[1]).textContent = fmtUSD(vals[k]);
+        });
+        document.getElementById('var-bars').style.display = '';
+        document.getElementById('var-note').innerHTML =
+          'Example book’s delta: ' + unhedgedDelta.toFixed(3) + ' BTC unhedged → ' + hedgedDelta.toFixed(3) +
+          ' BTC after the partial spot hedge. Historical and Monte Carlo agree within ' +
+          (Math.max(vals.hist99, vals.mc99) / Math.max(1, Math.min(vals.hist99, vals.mc99))).toFixed(1) +
+          'x at 99% — delta-normal misses badly because it can’t see the book’s gamma.';
+      } else {
+        document.getElementById('var-note').textContent = 'VaR computation failed — check inputs.';
+      }
+      Module._free(outPtr);
+      varRunBtn.disabled = false;
+      varRunBtn.textContent = 'Compute VaR →';
+    }, 20);
+  }
+  varRunBtn.addEventListener('click', runVar);
+
+  // ---- Stress testing (Phase 16) ----
+  var STRESS_LABELS = ['2020 COVID crash', '2022 FTX collapse', '2021-2022 bear market (peak to trough)'];
+  var currentScenario = 0;
+
+  function runStress(){
+    if (!Module || !historyLoaded) return;
+    var spot = parseFloat(document.getElementById('var-spot').value);
+    var vol = parseFloat(document.getElementById('var-vol').value) / 100;
+    if (!isFinite(spot) || !isFinite(vol) || vol <= 0) return;
+
+    var outPtr = Module._malloc(6 * 8);
+    var ok = Module.ccall('bridge_run_stress_test', 'number',
+      ['number','number','number','number'], [spot, vol, currentScenario, outPtr]);
+
+    if (ok){
+      var spotStart = Module.getValue(outPtr, 'double');
+      var spotEnd = Module.getValue(outPtr + 8, 'double');
+      var pctChange = Module.getValue(outPtr + 16, 'double');
+      var pnl = Module.getValue(outPtr + 24, 'double');
+      var valStart = Module.getValue(outPtr + 32, 'double');
+      var valEnd = Module.getValue(outPtr + 40, 'double');
+
+      document.getElementById('stress-spot-move').textContent = fmtUSD(spotStart) + ' → ' + fmtUSD(spotEnd) + ' (' + fmtPct(pctChange) + ')';
+      document.getElementById('stress-value').textContent = fmtUSD(valStart) + ' → ' + fmtUSD(valEnd);
+      document.getElementById('stress-pnl').textContent = fmtUSD(pnl);
+      document.getElementById('stress-grid').style.display = '';
+      document.getElementById('stress-note').textContent =
+        STRESS_LABELS[currentScenario] + ', replayed against today’s example book at the spot/vol set above — real dates looked up directly in data/btc_price_history.csv, option time-to-expiry decremented by the real elapsed calendar days, not an instantaneous shock.';
+    } else {
+      document.getElementById('stress-note').textContent = 'Stress test failed — price history may still be loading.';
+    }
+    Module._free(outPtr);
+  }
+
+  document.querySelectorAll('#stress-pills .pill').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('#stress-pills .pill').forEach(function(b){ b.classList.remove('active'); });
+      btn.classList.add('active');
+      currentScenario = parseInt(btn.getAttribute('data-scenario'), 10);
+      runStress();
+    });
+  });
 
   // Pulls Heston's kappa/xi/rho from docs/heston_calibration.json, which CI
   // regenerates on every push by running tools/calibrate_heston.cpp against
@@ -779,6 +1215,7 @@
     return res.json();
   }).then(function(c){
     if (typeof c.kappa === 'number') hestonKappa = c.kappa;
+    if (typeof c.theta === 'number') hestonTheta = c.theta;
     if (typeof c.xi === 'number') hestonXi = c.xi;
     if (typeof c.rho === 'number') hestonRho = c.rho;
     var note = document.getElementById('heston-calibration-note');
@@ -787,7 +1224,7 @@
         ' real Deribit contracts at the ' + c.expiry_days.toFixed(0) + '-day expiry (fit: ' +
         (typeof c.rmse_iv_pp === 'number' ? c.rmse_iv_pp.toFixed(2) : '?') + 'pp RMSE) — not hand-picked.';
     }
-    if (Module) price();  // re-price with the calibrated params if the engine already loaded
+    if (Module) { price(); priceBates(); }  // re-price with the calibrated params if the engine already loaded
   }).catch(function(){
     // heston_calibration.json not available yet — the illustrative
     // defaults declared above stand as-is.

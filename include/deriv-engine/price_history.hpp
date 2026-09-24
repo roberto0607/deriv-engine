@@ -23,4 +23,13 @@ struct PricePoint {
 // matter, for how (and whether) it depends on that.
 std::vector<PricePoint> load_price_history(const std::string& csv_path);
 
+// Same parser, same validation, same "date,price" format -- just fed
+// from an in-memory string instead of a file path. Exists for the WASM
+// demo (wasm/wasm_bridge.cpp): the browser fetches
+// docs/btc_price_history.csv itself (there's no filesystem for
+// load_price_history() to open inside a WASM module), and hands the raw
+// text straight to this function, so parsing is still done by this
+// project's real C++ code -- not reimplemented in JavaScript.
+std::vector<PricePoint> load_price_history_from_string(const std::string& csv_text);
+
 }  // namespace deriv

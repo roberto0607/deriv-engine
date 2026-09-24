@@ -1452,3 +1452,130 @@ actually is). Can explain why the example book is deliberately
 partially, not fully, hedged, and can compute (not just quote) its
 actual delta. Can name every honest limitation above without being
 asked.
+
+## Phase 17 — Wiring Bates/backtest/VaR into the live WASM demo (done)
+
+**What was built:** Phases 14-16 (Bates, the historical backtest,
+portfolio VaR/stress testing) existed only as C++ engine code and
+tests until this phase — the live demo (`docs/index.html`) still only
+showed Black-Scholes/tree/Monte Carlo/Heston/exotics. This phase wires
+all three into it as three new live cards, using the same
+"`wasm_bridge.cpp` forwards straight into the real engine code, no
+logic reimplemented in JS" discipline the existing cards already
+established — extended here, not abandoned, since it would have been
+the easy shortcut for the backtest/VaR cards specifically (see below).
+
+- `wasm_bridge.cpp`: 10 new exported functions —
+  `bridge_bates_price` (thin wrapper, same pattern as
+  `bridge_heston_price`); `bridge_load_price_history` (parses a CSV
+  *string* the browser fetched over HTTP, populates a module-global
+  `std::vector<PricePoint>` reused by every later call);
+  `bridge_run_backtest`/`bridge_backtest_window_count`/
+  `bridge_backtest_window_pnl_bps` (runs the real `run_backtest()` for
+  a chosen model over the loaded history, stashes the per-window
+  results for the sparkline chart); `bridge_run_var` (real
+  `historical_var()` + `monte_carlo_var()` + `delta_normal_var()` on
+  `make_example_market_maker_book()`); `bridge_run_stress_test` (real
+  `run_stress_test()` against one of `default_stress_scenarios()`).
+  Every function that can throw (`load_price_history_from_string`,
+  `run_backtest`, `run_stress_test`) is wrapped in try/catch and
+  returns a status code instead of propagating — needed because the
+  bridge otherwise runs the same code paths the native test suite
+  already exercises, just called from JS instead of Catch2.
+- `price_history.hpp`/`.cpp`: added `load_price_history_from_string()`,
+  sharing its actual parsing logic with the existing file-based
+  `load_price_history()` via a small internal `parse_price_history()`
+  helper — a WASM module has no filesystem to open
+  `data/btc_price_history.csv` from, so the browser fetches the CSV as
+  *text* and hands it to this function, keeping the parsing itself in
+  real C++ rather than reimplementing a CSV reader in JavaScript. Two
+  new tests (`[price_history]` tag) check it parses the same format the
+  file-based loader does and throws on the same malformed input.
+- `docs/index.html`: three new cards — Bates (Heston-vs-jumps
+  comparison, editable jump parameters, live zero-jump-collapse check),
+  a historical backtest (window-length picker, runs all three models
+  live over the real 16-year history, bar chart of mean hedge P&L +
+  sparkline of Bates' per-window P&L), and portfolio VaR/stress testing
+  (bar chart of historical/Monte Carlo/delta-normal VaR at 95%/99%,
+  plus a scenario picker replaying the three real crashes). The
+  backtest/VaR cards' fixed Heston/Bates structural parameters come
+  from the same `heston_calibration.json` CI already regenerates every
+  push (extended to also read `theta`, previously fetched but unused by
+  the existing Heston card, which derives its own theta from the
+  calculator's flat-vol input instead) — not a second hand-typed copy.
+- `.github/workflows/pages.yml`: added the 4 new source files to the
+  `em++` build's source list and 10 new function names to
+  `EXPORTED_FUNCTIONS`; added `-fexceptions` (the bridge's try/catch
+  blocks above do nothing without it — Emscripten's default build
+  aborts the whole module on an uncaught-by-default C++ exception
+  rather than letting compiled code catch its own); added a
+  `cp data/btc_price_history.csv docs/btc_price_history.csv` build step
+  and added that path to the "commit rebuilt assets if changed" step,
+  so the demo's copy stays in sync if the source data ever changes.
+
+**Why live in-browser instead of precomputing the numbers with CI (the
+same pattern `stats.json`/`heston_calibration.json` already use):**
+that would have been less work, and was seriously considered — but it
+would mean the backtest/VaR cards show a screenshot, not a
+computation. Measured directly before choosing: the real backtest over
+the full 16-year, 195-window history (all three models) runs in
+1.5-2 seconds in the compiled WASM module (Node.js, close to what a
+browser's own V8 does); VaR (20,000 Monte Carlo paths + the full
+historical resample) in well under 100ms. Both are fast enough to run
+synchronously on a button click without a Web Worker — so there was no
+real performance reason to fall back to precomputed numbers, and doing
+it live is strictly more convincing evidence: a visitor isn't shown a
+number, they watch their own browser derive it from the same 16 years
+of real price history and the same calibrated parameters the README
+quotes.
+
+**Verification:** every new bridge function was checked against this
+project's own already-trusted numbers before touching the HTML —
+`bridge_bates_price` at `jump_intensity=0` against `bridge_heston_price`
+(exact match, the same identity `tests/test_main.cpp`'s `[bates]` suite
+checks); `bridge_run_backtest` for all three models against
+`tools/run_backtest.cpp`'s native output (BS 103.5059/459.1305bps,
+Heston 73.1293/446.1977bps, Bates 225.7602/430.7260bps, 195 windows —
+matched to 4 decimal places, run from Node against the actual compiled
+`.wasm`); `bridge_run_stress_test` against the Phase 16 stress table
+above (all three scenarios' P&L matched to the cent). Beyond the
+numbers, the finished page was driven end-to-end with Playwright
+against a local static server — engine load, all three new cards'
+buttons/pickers, real network fetches of `btc_price_history.csv` —
+with zero console/page errors traceable to this phase's code (the only
+console error seen was Google Fonts being unreachable from this
+sandbox's own network proxy, unrelated to and pre-existing before this
+change).
+
+**Honest limitations:**
+- Monte Carlo VaR's exact numbers can differ slightly between this
+  sandbox's native build and the WASM build (~0.2% on the 99% figure in
+  testing) — `std::mt19937` itself is a fully specified, portable
+  algorithm, but `std::normal_distribution`'s exact draw-to-draw
+  behavior is implementation-defined, and Emscripten's C++ standard
+  library isn't bit-identical to Linux's libstdc++. Not a bug, and not
+  visible in the deterministic historical VaR or the stress tests
+  (neither touches a random number generator).
+- Running a fresh Bates backtest over all 195 windows blocks the
+  browser's main thread for roughly a second — noticeable, not
+  disruptive, and the run button visibly disables/relabels itself for
+  the duration. A Web Worker would remove that pause entirely; not done
+  here since the pause is well under the threshold where it reads as
+  the page hanging, and moving the compiled module into a worker is
+  real added complexity for a demo page.
+- The backtest/VaR cards' Bates jump parameters are fixed (matching
+  `tools/run_backtest.cpp`'s own hardcoded values) rather than editable
+  — unlike the dedicated Bates card above, which does expose them.
+  They're a one-time heuristic estimate (see Phase 15), not something
+  CI regenerates, so there's no live "real calibrated value" to refetch
+  the way kappa/theta/xi/rho are.
+
+**Defend this:** can explain exactly why the backtest/VaR cards fetch a
+CSV as text and parse it with a second entry point into the same C++
+parser, rather than either shipping a second JS CSV reader or trying to
+give a WASM module real filesystem access to `data/`. Can point to the
+native-vs-WASM number comparison above as the actual verification this
+phase relied on, not just "it looked right in the browser." Can explain
+the MC VaR discrepancy's real cause (`normal_distribution` being
+implementation-defined) without hand-waving it as generic
+floating-point noise.

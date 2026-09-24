@@ -1797,6 +1797,31 @@ TEST_CASE("Bates Monte Carlo (independent SDE + jump simulation) agrees with the
 
 // --- Historical delta-hedging backtest (Phase 15) --------------------------
 
+TEST_CASE("load_price_history_from_string parses the same CSV format load_price_history reads from a file",
+          "[backtest][price_history]") {
+    // The WASM demo (docs/index.html) fetches btc_price_history.csv over
+    // HTTP as text and hands it to this string-based loader, since a
+    // WASM module has no filesystem to open a path with -- see
+    // price_history.hpp's header comment. Both entry points share one
+    // parser (parse_price_history() in price_history.cpp), so this test
+    // is really checking that sharing didn't break the file-based path,
+    // and that the string path parses correctly on its own.
+    std::string csv = "Date,Price\n2020-01-01,7200.5\n2020-01-02,7300.25\n2020-01-03,6950.0\n";
+    auto points = deriv::load_price_history_from_string(csv);
+
+    REQUIRE(points.size() == 3);
+    REQUIRE(points[0].date == "2020-01-01");
+    REQUIRE(points[0].price == Catch::Approx(7200.5));
+    REQUIRE(points[2].date == "2020-01-03");
+    REQUIRE(points[2].price == Catch::Approx(6950.0));
+}
+
+TEST_CASE("load_price_history_from_string throws on a malformed row, same as the file-based loader",
+          "[backtest][price_history][edge_case]") {
+    std::string csv = "Date,Price\n2020-01-01,7200.5\nnot-a-valid-row\n";
+    REQUIRE_THROWS_AS(deriv::load_price_history_from_string(csv), std::runtime_error);
+}
+
 TEST_CASE("trailing_realized_vol matches a hand-computed value on a small series",
           "[backtest]") {
     // Three prices, two log-returns, checked against a value computed

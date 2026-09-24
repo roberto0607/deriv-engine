@@ -12,8 +12,14 @@
 #include "deriv-engine/implied_vol.hpp"
 #include "deriv-engine/heston.hpp"
 #include "deriv-engine/exotic_options.hpp"
+#include "deriv-engine/bates.hpp"
+#include "deriv-engine/price_history.hpp"
+#include "deriv-engine/backtest.hpp"
+#include "deriv-engine/portfolio.hpp"
+#include "deriv-engine/var.hpp"
 
 #include <emscripten/emscripten.h>
+#include <vector>
 
 using namespace deriv;
 
@@ -26,6 +32,85 @@ MarketData make_market(double spot, double rate, double div, double vol) {
     m.dividend_yield = div;
     m.volatility = vol;
     return m;
+}
+
+// Real BTC price history, fetched and parsed once by the browser (see
+// bridge_load_price_history below) and reused by every backtest/VaR/
+// stress-test call after that -- a single global is fine here since the
+// demo page only ever has one history loaded at a time, unlike the
+// library code itself (backtest.hpp/var.hpp), which takes the history
+// as a parameter and has no such assumption.
+std::vector<PricePoint> g_history;
+
+// The last backtest run's per-window results, kept around so the demo
+// can draw a chart of hedge P&L across all 195 real windows without
+// re-running the backtest or returning a huge array through the bridge
+// in one call -- see bridge_backtest_window_count/pnl_bps below.
+std::vector<BacktestWindowResult> g_last_backtest_windows;
+
+// Every card in this demo prices the same way the Phase 16 test suite
+// did (test_bs_pricer() in tests/test_main.cpp): Black-Scholes for
+// portfolio_value/portfolio_delta, regardless of which model priced the
+// option originally. See docs/numerics.md Phase 16 for why that's a
+// reasonable choice for a portfolio-level risk number.
+PortfolioPricer market_maker_pricer() {
+    return [](const EuropeanOption& opt, const MarketData& m) { return black_scholes_price(opt, m); };
+}
+
+// Central finite-difference delta -- the same approach
+// tools/run_backtest.cpp and backtest.cpp itself use for Heston/Bates,
+// which have no closed-form Greeks in this engine (see backtest.hpp's
+// header comment for why that's a deliberate scope decision).
+double finite_diff_delta(double spot, const std::function<double(double)>& price_at_spot) {
+    double h = spot * 0.001;
+    return (price_at_spot(spot + h) - price_at_spot(spot - h)) / (2.0 * h);
+}
+
+ModelFactory make_bs_backtest_factory() {
+    return [](double strike, double vol) -> PriceDeltaFn {
+        return [strike, vol](double spot, double tau) -> std::pair<double, double> {
+            EuropeanOption option{strike, tau, OptionType::Call};
+            MarketData market{spot, 0.0, 0.0, vol};
+            double price = black_scholes_price(option, market);
+            Greeks g = black_scholes_greeks(option, market);
+            return {price, g.delta};
+        };
+    };
+}
+
+ModelFactory make_heston_backtest_factory(double kappa, double theta, double xi, double rho) {
+    return [=](double strike, double window_vol) -> PriceDeltaFn {
+        double v0 = window_vol * window_vol;
+        HestonParams params{v0, kappa, theta, xi, rho};
+        return [strike, params](double spot, double tau) -> std::pair<double, double> {
+            EuropeanOption option{strike, tau, OptionType::Call};
+            auto price_at = [&](double s) {
+                MarketData m{s, 0.0, 0.0, 0.0};
+                return heston_price(option, m, params);
+            };
+            double price = price_at(spot);
+            double delta = finite_diff_delta(spot, price_at);
+            return {price, delta};
+        };
+    };
+}
+
+ModelFactory make_bates_backtest_factory(double kappa, double theta, double xi, double rho,
+                                          double jump_intensity, double jump_mean, double jump_vol) {
+    return [=](double strike, double window_vol) -> PriceDeltaFn {
+        double v0 = window_vol * window_vol;
+        BatesParams params{{v0, kappa, theta, xi, rho}, jump_intensity, jump_mean, jump_vol};
+        return [strike, params](double spot, double tau) -> std::pair<double, double> {
+            EuropeanOption option{strike, tau, OptionType::Call};
+            auto price_at = [&](double s) {
+                MarketData m{s, 0.0, 0.0, 0.0};
+                return bates_price(option, m, params);
+            };
+            double price = price_at(spot);
+            double delta = finite_diff_delta(spot, price_at);
+            return {price, delta};
+        };
+    };
 }
 
 EuropeanOption make_euro(double strike, double T, int type) {
@@ -206,6 +291,181 @@ double bridge_down_and_out_call_closed_form(double spot, double rate, double div
     o.type = OptionType::Call;
     o.direction = BarrierDirection::DownAndOut;
     return down_and_out_call_price_closed_form(o, make_market(spot, rate, div, vol));
+}
+
+// ---------------------------------------------------------------------
+// Bates (Phase 14): same COS method heston_price uses, extended with the
+// compound Poisson jump term. v0/theta are variances, matching
+// bridge_heston_price's convention above.
+// ---------------------------------------------------------------------
+EMSCRIPTEN_KEEPALIVE
+double bridge_bates_price(double spot, double rate, double div,
+                           double strike, double T, int type,
+                           double v0, double kappa, double theta, double xi, double rho,
+                           double jump_intensity, double jump_mean, double jump_vol) {
+    BatesParams params{{v0, kappa, theta, xi, rho}, jump_intensity, jump_mean, jump_vol};
+    return bates_price(make_euro(strike, T, type), make_market(spot, rate, div, 0.0), params);
+}
+
+// ---------------------------------------------------------------------
+// Real BTC price history (Phase 15/16): the browser fetches
+// docs/btc_price_history.csv as plain text and hands it here -- this
+// project's own CSV parser (price_history.cpp) does the actual parsing,
+// not a JS reimplementation. Returns the number of rows parsed, or -1 on
+// a parse failure (malformed CSV) so the caller can show a real error
+// instead of the module silently aborting.
+// ---------------------------------------------------------------------
+EMSCRIPTEN_KEEPALIVE
+int bridge_load_price_history(const char* csv_text) {
+    try {
+        g_history = load_price_history_from_string(csv_text);
+        g_last_backtest_windows.clear();
+        return static_cast<int>(g_history.size());
+    } catch (...) {
+        g_history.clear();
+        return -1;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+int bridge_history_size() {
+    return static_cast<int>(g_history.size());
+}
+
+// ---------------------------------------------------------------------
+// Historical delta-hedging backtest (Phase 15), run live against
+// whatever g_history bridge_load_price_history() loaded. model: 0 =
+// Black-Scholes, 1 = Heston, 2 = Bates (Heston/Bates params ignored for
+// model 0). Writes [mean_pnl_bps, stdev_pnl_bps, num_windows] into out
+// and returns 1 on success, 0 if the history isn't loaded yet or is too
+// short for even one window -- the same "not enough history" case
+// run_backtest() itself throws on, caught here rather than propagated.
+// Also stashes the per-window results in g_last_backtest_windows for
+// bridge_backtest_window_count/pnl_bps to draw a chart from.
+// ---------------------------------------------------------------------
+EMSCRIPTEN_KEEPALIVE
+int bridge_run_backtest(int model, int window_days, int trailing_vol_days,
+                         double kappa, double theta, double xi, double rho,
+                         double jump_intensity, double jump_mean, double jump_vol,
+                         double* out) {
+    if (g_history.empty()) return 0;
+    try {
+        ModelFactory factory;
+        std::string model_name;
+        if (model == 0) {
+            factory = make_bs_backtest_factory();
+            model_name = "Black-Scholes";
+        } else if (model == 1) {
+            factory = make_heston_backtest_factory(kappa, theta, xi, rho);
+            model_name = "Heston";
+        } else {
+            factory = make_bates_backtest_factory(kappa, theta, xi, rho, jump_intensity, jump_mean, jump_vol);
+            model_name = "Bates";
+        }
+
+        BacktestSummary summary = run_backtest(g_history, model_name, factory, window_days, trailing_vol_days);
+        out[0] = summary.mean_pnl_bps;
+        out[1] = summary.stdev_pnl_bps;
+        out[2] = static_cast<double>(summary.num_windows);
+        g_last_backtest_windows = summary.windows;
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+int bridge_backtest_window_count() {
+    return static_cast<int>(g_last_backtest_windows.size());
+}
+
+EMSCRIPTEN_KEEPALIVE
+double bridge_backtest_window_pnl_bps(int index) {
+    if (index < 0 || index >= static_cast<int>(g_last_backtest_windows.size())) return 0.0;
+    return g_last_backtest_windows[index].hedge_pnl_bps;
+}
+
+// ---------------------------------------------------------------------
+// Portfolio-level VaR (Phase 16) on the shipped example short-strangle
+// book (make_example_market_maker_book), computed three independent
+// ways: real historical simulation (needs g_history loaded), Monte
+// Carlo under the Bates SDE, and the delta-normal baseline. Writes
+// [hist_var95, hist_var99, hist_mean_pnl, mc_var95, mc_var99,
+// mc_mean_pnl, delta_normal_var95, delta_normal_var99, unhedged_delta,
+// hedged_delta] into out. Returns 1 on success, 0 if g_history isn't
+// loaded yet.
+// ---------------------------------------------------------------------
+EMSCRIPTEN_KEEPALIVE
+int bridge_run_var(double spot, double vol, int mc_paths, unsigned int seed,
+                    double kappa, double theta, double xi, double rho,
+                    double jump_intensity, double jump_mean, double jump_vol,
+                    double* out) {
+    if (g_history.empty()) return 0;
+    try {
+        MarketData market{spot, 0.0, 0.0, vol};
+        Portfolio book = make_example_market_maker_book(spot);
+        PortfolioPricer pricer = market_maker_pricer();
+
+        VaRResult hvar = historical_var(book, market, g_history, pricer, 1);
+
+        HestonParams heston{vol * vol, kappa, theta, xi, rho};
+        BatesParams bates{heston, jump_intensity, jump_mean, jump_vol};
+        VaRResult mcvar = monte_carlo_var(book, market, bates, pricer, mc_paths, 1, seed);
+
+        double dn95 = delta_normal_var(book, market, pricer, vol, 1, 0.95);
+        double dn99 = delta_normal_var(book, market, pricer, vol, 1, 0.99);
+
+        Portfolio unhedged = book;
+        unhedged.positions.pop_back();  // drop the spot hedge leg -- see portfolio.cpp
+
+        out[0] = hvar.var_95;
+        out[1] = hvar.var_99;
+        out[2] = hvar.mean_pnl;
+        out[3] = mcvar.var_95;
+        out[4] = mcvar.var_99;
+        out[5] = mcvar.mean_pnl;
+        out[6] = dn95;
+        out[7] = dn99;
+        out[8] = portfolio_delta(unhedged, market, pricer);
+        out[9] = portfolio_delta(book, market, pricer);
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+// ---------------------------------------------------------------------
+// Real historical crash replay (Phase 16) on the example book. scenario:
+// 0 = 2020 COVID crash, 1 = 2022 FTX collapse, 2 = the 2021-2022 bear
+// market -- the same three, same order, as default_stress_scenarios()
+// in var.cpp; the demo hardcodes their labels/dates in JS to match (see
+// docs/index.html), the same way it already hardcodes barrier-direction
+// labels to match instrument.hpp's BarrierDirection order. Writes
+// [spot_start, spot_end, pct_change, pnl, value_start, value_end] into
+// out. Returns 1 on success, 0 if g_history isn't loaded yet or the
+// scenario's dates aren't in it.
+// ---------------------------------------------------------------------
+EMSCRIPTEN_KEEPALIVE
+int bridge_run_stress_test(double spot, double vol, int scenario, double* out) {
+    if (g_history.empty()) return 0;
+    try {
+        auto scenarios = default_stress_scenarios();
+        if (scenario < 0 || scenario >= static_cast<int>(scenarios.size())) return 0;
+
+        MarketData market{spot, 0.0, 0.0, vol};
+        Portfolio book = make_example_market_maker_book(spot);
+        StressResult r = run_stress_test(book, market, g_history, market_maker_pricer(), scenarios[scenario]);
+
+        out[0] = r.spot_start;
+        out[1] = r.spot_end;
+        out[2] = r.spot_pct_change;
+        out[3] = r.pnl;
+        out[4] = r.portfolio_value_start;
+        out[5] = r.portfolio_value_end;
+        return 1;
+    } catch (...) {
+        return 0;
+    }
 }
 
 }  // extern "C"
