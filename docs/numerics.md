@@ -756,3 +756,91 @@ and no jumps in the variance process itself. Extensions that add those
 literature; this implementation deliberately stays at Bates' original
 scope rather than chasing generality the project has no concrete need
 for yet.
+
+## Historical delta-hedging backtest (Phase 15)
+
+**The metric, and why it's basis points of spot, not dollars:** a raw
+dollar hedge P&L is meaningless to average across this dataset -- BTC
+spans roughly six orders of magnitude in price from 2010 ($0.08) to 2026
+($78,000+). Every window's hedge P&L is instead reported as
+`hedge_pnl / spot_at_window_start * 10000`, basis points of that
+window's own starting spot, which is comparable and averageable across
+the whole history regardless of what BTC happened to cost that decade.
+
+**The core loop (`backtest.cpp`'s `run_backtest()`), in order:**
+1. At each window's start index `i`, compute `trailing_realized_vol`
+   from the `trailing_vol_days` calendar days immediately before `i`
+   (sample standard deviation of daily log returns, annualized by
+   `sqrt(365)` -- 365, not the ~252-day equity convention, since BTC
+   trades every calendar day and this history has a price point for
+   every one of them).
+2. Strike the option at-the-money: `K = price[i]`. Build that window's
+   pricer via the model's `ModelFactory(strike, vol)`.
+3. Price and delta-hedge at `t=0` (`tau = window_days/365`), buy
+   `delta` shares, track a self-financing cash account -- the exact same
+   bookkeeping `hedging.cpp`'s `simulate_delta_hedge()` uses for its
+   Monte Carlo hedge-error test, just walking a real price path instead
+   of a simulated GBM one.
+4. Step forward one calendar day at a time using the REAL historical
+   price at each subsequent index, recomputing `tau` and rebalancing to
+   the model's new delta each day, until expiry.
+5. At expiry, liquidate the hedge, compute the real payoff
+   `max(S_final - K, 0)`, and compare the grown premium plus hedge
+   account against that payoff -- `hedge_pnl`.
+
+**Why v0 updates per window but kappa/theta/xi/rho (and Bates' jump
+parameters) don't:** there's no historical implied-vol surface in this
+backtest to refit a full parameter set against at every window -- the
+only real historical input is spot price. Re-fitting Heston/Bates
+structurally (kappa, xi, rho) from realized price behavior alone would
+be a materially different (and much weaker) exercise than what this
+project's calibration code (`heston_calibration.hpp`) actually does,
+which fits against a real *options* smile. The honest design instead
+holds the real, options-smile-calibrated structural shape fixed
+(`tools/calibrate_heston.cpp`'s actual output: kappa=1.829505,
+theta=0.134505, xi=1.280247, rho=-0.194560) and lets only v0 -- the one
+parameter that's legitimately estimable from realized price data alone
+-- track each window's own trailing realized variance. This tests
+something specific and real: does a smile calibrated from one real
+snapshot generalize prospectively, not "can this backtest quietly refit
+a new model every 30 days and call the result validation."
+
+**Estimating Bates' jump parameters from price history, not thin air:**
+lacking historical implied vol, the jump parameters instead come
+directly from the same daily-return series the whole backtest already
+uses. The method: flag any day whose log return sits more than 4 sample
+standard deviations from the full-history mean as a jump day (56 days
+out of 5,903, roughly 3.46/year); `jump_mean` and `jump_vol` are that
+flagged subset's own mean and standard deviation
+(-0.000774 and 0.273 respectively). This is a simple threshold heuristic,
+not a formal jump-detection method (e.g. Lee & Mykland's bipower-variation
+test) -- documented as a real, named limitation in `docs/phase-log.md`,
+not glossed over.
+
+**Why finite-difference delta for Heston/Bates instead of an analytical
+formula:** both pricers evaluate a characteristic function through a COS
+(Fourier-cosine) series (Fang & Oosterlee, 2008) -- fast to evaluate at
+a point, but this codebase has never derived a closed-form Greeks
+formula for that representation (only Black-Scholes has one, via
+`greeks.cpp`). A central finite difference --
+`(price(S+h) - price(S-h)) / (2h)`, `h = 0.1%` of spot -- sidesteps that
+derivation entirely at the cost of one extra reprice per rebalance,
+which is cheap enough here (roughly 23,000 total COS reprices across the
+full 16-year backtest for Heston and Bates combined, under a second of
+runtime) that the tradeoff was clearly worth it for this phase rather
+than deriving Heston/Bates analytical Greeks as a prerequisite.
+
+**Data provenance, checked before trusting it:** `data/btc_price_history.csv`
+comes from a public GitHub dataset
+(`Habrador/Bitcoin-price-visualization`), not a paid vendor, since this
+environment couldn't reach CoinGecko, Yahoo Finance, or Stooq (each
+blocked by robots.txt or this environment's own egress policy) and no
+free historical-options data source exists at all. Before trusting it:
+checked for date gaps and duplicates (zero of either across 5,904 daily
+rows, 2010-07-18 through 2026-09-15) and spot-checked four independently
+known price points -- the Dec 2017 ATH (~$19,343 here vs. ~$19,783
+widely reported, exchange-dependent), the Nov 2021 ATH (~$67,292 here
+vs. ~$69,000 on Coinbase), the Mar 2020 COVID crash low (~$5,800), and
+the Nov 2022 FTX-collapse low (~$15,787) -- all in the right place. Not
+independently reconciled bar-by-bar against exchange data, which is the
+honest limit of this verification.

@@ -64,6 +64,7 @@ engine's Heston model is calibrated to reproduce.
 | Asian options (path-dependent MC) | Full-path GBM simulation, not terminal-jump sampling | Geometric-average variant matches its Kemna-Vorst closed form; arithmetic ≥ geometric (AM-GM, provable pathwise); Asian < vanilla European; single-monitoring-date edge case matches vanilla Monte Carlo exactly |
 | Barrier options (path-dependent MC) | All 4 knock-in/knock-out directions | Down-and-out call matches a method-of-images closed form; the other 3 directions validated via the model-independent in/out parity identity (knock-out + knock-in = vanilla) |
 | Bates model (Heston + Merton jumps) | Adds discontinuous jumps on top of Heston's diffusion — a jump-diffusion closed-form via the COS method, reusing Heston's own characteristic function rather than re-deriving it | Collapses exactly to Heston when jump intensity is zero; collapses to closed-form Merton (1976) jump-diffusion in the deterministic-variance limit; independently cross-checked against a full Monte Carlo simulation of the actual Bates SDE + jump process |
+| Historical delta-hedging backtest | Do Black-Scholes/Heston/Bates hedge ratios track *real* BTC price history, day by day — not just synthetic Monte Carlo paths | Rolling 30-day at-the-money calls, delta-hedged daily against 16 years of real BTC price history (2010-2026, 195 windows): Bates (jump-aware) shows both the highest mean hedge P&L (+225.8bps) and the lowest variance (430.7bps) of the three models, consistent whether measured over the full history or restricted to 2016+ (Deribit's own era) |
 
 Every method above independently arrives at the same price for the
 same European option — four structurally different approaches
@@ -126,6 +127,15 @@ evidence for this engine.
 - **Reproducible market data.** Live data is pulled once and frozen
   to a snapshot (`data/btc_chain_snapshot.json`) rather than tests
   depending on a live API call, keeping the test suite deterministic.
+- **A backtest, scoped honestly to what real data actually supports.**
+  No free historical BTC *options* data source exists, so the Phase 15
+  backtest tests pricing/hedging accuracy against 16 years of real BTC
+  *spot* price history instead of an invented trading strategy — a
+  deliberately narrower, more defensible claim than a strategy backtest
+  would be, with every input's provenance (a public GitHub price
+  dataset, spot-checked against 4 known price points) and every honest
+  limitation (no historical implied vol, jump parameters from a simple
+  threshold heuristic) written down in `docs/phase-log.md` Phase 15.
 
 ## Build & test
 

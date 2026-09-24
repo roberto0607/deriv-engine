@@ -1138,3 +1138,179 @@ time-varying jump intensity, no separate up/down jump distributions, and
 no jumps in the variance process itself (some later extensions, e.g.
 Duffie-Pan-Singleton, add those; this implementation deliberately doesn't
 chase that generality without a concrete need for it).
+
+## Phase 15 — Historical delta-hedging backtest (done)
+
+**What was built:**
+- `price_history.hpp`/`price_history.cpp`: loads a plain "date,price"
+  daily CSV into an ordered vector -- no JSON dependency needed for this,
+  unlike the Deribit snapshot data
+- `data/btc_price_history.csv`: 5,904 daily BTC/USD closes,
+  2010-07-18 through 2026-09-15, sourced from a public GitHub dataset
+  (`Habrador/Bitcoin-price-visualization`) since this project's own
+  Deribit pull only ever captured a single live snapshot, not years of
+  history, and no free historical-options API was reachable from this
+  environment (checked: CoinGecko, Yahoo Finance, and Stooq were all
+  blocked by either robots.txt or this environment's egress policy; the
+  GitHub-hosted CSV was the one path that actually worked). Spot-checked
+  against known price history before trusting it: Dec 2017 ATH ~$19,343,
+  Nov 2021 ATH ~$67,292, the Mar 2020 COVID crash to ~$5,800, and the Nov
+  2022 FTX-collapse low ~$15,787 all land in the right place; zero date
+  gaps or duplicates across the full series
+- `backtest.hpp`/`backtest.cpp`: a model-agnostic rolling-window
+  delta-hedging backtest (`run_backtest()`) -- rolls a fresh
+  at-the-money European call every `window_days` calendar days, hedges
+  it daily using the REAL historical price path (not a simulated one,
+  unlike `hedging.cpp`'s Monte Carlo hedge-error test), and records
+  realized hedge P&L at expiry, normalized to basis points of that
+  window's starting spot (raw dollar P&L is meaningless to average
+  across a series that spans $0.08 to $78,000)
+- `tools/run_backtest.cpp`: loads the price history and runs all three
+  models (Black-Scholes, Heston, Bates) through the same backtest,
+  emitting JSON -- same "never hand-type real numbers" convention as
+  `gen_stats.cpp`/`calibrate_heston.cpp`
+- 7 new tests (`tests/test_main.cpp`, `[backtest]` tag): `trailing_realized_vol`
+  checked against a hand-computed value, window-boundary bookkeeping
+  checked on a small synthetic series, an out-of-range-history edge
+  case, a Bates-collapses-to-Heston-through-the-backtest-harness
+  consistency check (mirroring the exact-collapse property from Phase
+  14), and a `[.manual][real_data]` test running the actual full
+  historical backtest
+
+**A scope decision worth being explicit about — why this backtests
+hedging, not a trading strategy:** the two are easy to conflate under
+"backtesting," but they answer different questions. A strategy backtest
+(P&L of an actual position-taking rule) depends heavily on choices --
+sizing, entry/exit, transaction costs -- that have nothing to do with
+whether the *pricing model* is correct, and it's a well-known way
+backtests end up telling their author what they want to hear (tune the
+strategy until the number looks good). This backtest instead asks a
+narrower, more defensible question: given a model's calibrated
+parameters, how well would its predicted hedge ratio have tracked *real*
+BTC price moves, day by day, across the model's actual (not
+model-assumed) full trading history? That's a direct extension of this
+project's existing validation story (implied vol matched to a real
+exchange, Heston calibrated to a real chain) into the time dimension,
+rather than a new kind of claim about trading skill.
+
+**Why there's no historical options data anywhere in this backtest:**
+real historical implied-vol surfaces, day by day, going back years,
+aren't available for free -- checked and ruled out before defaulting to
+this design. The backtest instead uses the ONLY real historical input
+that's freely available (spot price) and estimates each option's writing
+volatility from trailing realized volatility (30 trading days by
+default) at the moment it's written -- a standard, honestly-labeled
+proxy, not a claim that this is what implied vol actually was on any
+given day.
+
+**How each model's parameters are set, and why they don't get refit
+every window:** Black-Scholes takes the trailing realized vol directly
+as sigma. Heston and Bates hold their structural shape parameters fixed
+across the *entire* ~16-year backtest -- Heston's kappa/theta/xi/rho are
+literally `tools/calibrate_heston.cpp`'s real output from fitting the
+committed Deribit snapshot (the same numbers the live demo's Heston card
+uses), and Bates' jump_intensity/jump_mean/jump_vol are estimated once,
+directly from this same price history, via a simple 4-standard-deviation
+threshold on daily log returns (days whose return sits more than 4
+sample standard deviations from the mean are flagged as jump days; their
+mean and standard deviation become jump_mean and jump_vol; count-per-year
+becomes jump_intensity). Only each window's v0 (instantaneous variance)
+updates window to window, from that window's own trailing realized
+variance. This is a deliberate choice, not a missed opportunity to
+refit: there's no historical implied-vol surface to refit kappa/xi/rho
+against day by day (that's exactly the data this project doesn't have),
+so the honest thing to test is whether ONE real, already-validated
+parameter set generalizes prospectively across BTC's whole price
+history -- not to quietly re-fit new parameters every window and call
+the result "the model."
+
+**Why finite differences, not analytical Greeks, for Heston/Bates
+delta:** this engine's Heston and Bates pricers are COS-method
+characteristic-function pricers (Fang & Oosterlee, 2008) -- fast to
+evaluate but with no closed-form Greeks in this codebase (Black-Scholes
+gets analytical Greeks via `greeks.cpp`; Heston/Bates never did, since
+nothing before this phase needed them). A central finite difference
+(bump spot by 0.1%, reprice, divide) is the pragmatic choice here: cheap
+enough to run at backtest scale (195 windows x 30 daily rebalances x 2
+reprices per delta x 2 models is under a second), accurate enough for a
+hedge ratio, and it doesn't require deriving a new closed-form
+sensitivity for a characteristic-function pricer -- a real project of
+its own that this phase didn't need to take on to answer the question at
+hand.
+
+**Results (full history, 2010-07-18 to 2026-09-15, 195 non-overlapping
+30-day windows):**
+
+| Model | Mean hedge P&L | Std dev of hedge P&L |
+|---|---|---|
+| Black-Scholes | +103.5 bps of spot | 459.1 bps |
+| Heston | +73.1 bps of spot | 446.2 bps |
+| Bates | +225.8 bps of spot | 430.7 bps |
+
+**Sensitivity check — same backtest restricted to 2016-01-01 onward**
+(the era Deribit itself, and therefore every other real-market number in
+this project, actually covers -- 2010-2013 BTC traded on razor-thin
+volume and moved on liquidity events a modern options market never
+would), 129 windows:
+
+| Model | Mean hedge P&L | Std dev of hedge P&L |
+|---|---|---|
+| Black-Scholes | +28.7 bps of spot | 299.8 bps |
+| Heston | +4.6 bps of spot | 295.9 bps |
+| Bates | +173.8 bps of spot | 283.7 bps |
+
+The ranking (Bates highest mean, lowest variance; Heston lowest mean) is
+identical in both windows, not just an artifact of the extreme early
+years -- some evidence this is a real property of the data rather than a
+fluke of one noisy period. The honest reading: Bates' jump term makes it
+write meaningfully higher-premium options (it prices in tail risk the
+other two miss entirely), and on a price history that genuinely contains
+large, sudden moves — BTC's whole history, not a cherry-picked
+crash — collecting that extra premium tends to pay for itself, both in
+higher average P&L and in lower variance of that P&L. This is exactly
+the kind of behavior a jump model is supposed to produce; seeing it show
+up on real data, not just in the synthetic collapse tests from Phase 14,
+is the actual point of this backtest existing.
+
+**Honest limitations:**
+- No historical options data anywhere in this backtest -- trailing
+  realized vol is a proxy for what an option would have been written at,
+  not a record of what one actually was. A backtest against real
+  historical implied vol, if that data becomes available, would be a
+  stronger and different test.
+- Heston/Bates structural parameters come from ONE real calibration (a
+  single Deribit snapshot, one date), applied prospectively across 16
+  years of history that mostly predates that snapshot -- this measures
+  whether that one calibrated shape generalizes, not whether the model
+  would have calibrated well at every point along the way.
+- The jump-parameter estimation (4-sigma threshold) is a simple,
+  transparent heuristic, not a rigorous jump-detection method (e.g.
+  Lee-Mykland); a different threshold would give different jump
+  parameters and could plausibly shift the exact bps numbers above, even
+  if the qualitative ranking is unlikely to flip given how consistent it
+  is across both the full-history and 2016+ windows.
+- The price history itself comes from a public GitHub dataset, not a
+  paid financial data vendor -- spot-checked against known price history
+  (above) but not independently reconciled against exchange-level data
+  bar by bar.
+- Options are always calls, always struck exactly at-the-money at
+  writing, on a fixed 30-day tenor -- a real hedging book runs a mix of
+  strikes, tenors, and both calls and puts; this is a controlled,
+  single-instrument test of relative model behavior, not a claim about
+  what any real book's P&L would have been.
+
+**Defend this:**
+Can explain why this is a pricing/hedging backtest and not a trading
+strategy backtest, and why that's the right scope for this project (see
+above). Can explain exactly what a "window" is and how its three
+model-specific option-writing volatilities are each derived (BS: trailing
+realized vol directly; Heston/Bates: trailing realized variance as v0,
+with everything else fixed structurally). Can explain why Heston/Bates
+delta uses finite differences and what the tradeoff is (fast to
+implement correctly, no need for a new closed-form Greeks derivation;
+costs a small amount of numerical accuracy and roughly 2x the pricing
+calls per rebalance versus an analytical formula). Can name, unprompted,
+every honest limitation above -- in particular that "hedge P&L" here
+compares a model's OWN theoretical price against its OWN hedge cost, not
+against a market-observed premium, since no historical market premium
+exists to compare against.

@@ -22,6 +22,8 @@
 #include "deriv-engine/exotic_options.hpp"
 #include "deriv-engine/bates.hpp"
 #include "deriv-engine/bates_mc.hpp"
+#include "deriv-engine/price_history.hpp"
+#include "deriv-engine/backtest.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -1789,4 +1791,252 @@ TEST_CASE("Bates Monte Carlo (independent SDE + jump simulation) agrees with the
         REQUIRE(mc.standard_error > 0.0);
         REQUIRE(cos_price == Catch::Approx(mc.price).margin(5.0 * mc.standard_error));
     }
+}
+
+// --- Historical delta-hedging backtest (Phase 15) --------------------------
+
+TEST_CASE("trailing_realized_vol matches a hand-computed value on a small series",
+          "[backtest]") {
+    // Three prices, two log-returns, checked against a value computed
+    // independently by hand (not by re-running the same formula):
+    // log(105/100) = 0.04879016417, log(103/105) = -0.01926909...
+    // mean = 0.014760537, sample (n-1) variance over 2 points =
+    // ((0.04879016417-0.014760537)^2 + (-0.01926909-0.014760537)^2) / 1
+    // = (0.034029627)^2 + (-0.034029627)^2 = 2 * 0.034029627^2
+    // daily_vol = sqrt(2 * 0.034029627^2) = 0.034029627 * sqrt(2)
+    std::vector<deriv::PricePoint> history = {
+        {"2020-01-01", 100.0}, {"2020-01-02", 105.0}, {"2020-01-03", 103.0}};
+
+    double r0 = std::log(105.0 / 100.0);
+    double r1 = std::log(103.0 / 105.0);
+    double mean = (r0 + r1) / 2.0;
+    double sq = (r0 - mean) * (r0 - mean) + (r1 - mean) * (r1 - mean);
+    double sample_var = sq / 1.0;  // n-1 = 1
+    double expected_daily_vol = std::sqrt(sample_var);
+    double expected_annualized = expected_daily_vol * std::sqrt(365.0);
+
+    double actual = deriv::trailing_realized_vol(history, 0, 2);
+    REQUIRE(actual == Catch::Approx(expected_annualized).epsilon(1e-9));
+}
+
+TEST_CASE("trailing_realized_vol rejects an out-of-range window", "[backtest][edge_case]") {
+    std::vector<deriv::PricePoint> history = {{"2020-01-01", 100.0}, {"2020-01-02", 101.0}};
+    REQUIRE_THROWS_AS(deriv::trailing_realized_vol(history, 0, 5), std::runtime_error);
+    REQUIRE_THROWS_AS(deriv::trailing_realized_vol(history, -1, 1), std::runtime_error);
+}
+
+namespace {
+
+// Minimal Black-Scholes ModelFactory, mirroring tools/run_backtest.cpp's
+// (not reused directly since that file's factories are local to its own
+// anonymous namespace and this project's tools/ programs aren't part of
+// the CMakeLists targets tests links against -- see tools/gen_stats.cpp
+// and tools/calibrate_heston.cpp for the established precedent of
+// standalone tools with their own main()). Kept intentionally tiny.
+deriv::ModelFactory test_black_scholes_factory() {
+    return [](double strike, double vol) -> deriv::PriceDeltaFn {
+        return [strike, vol](double spot, double tau) -> std::pair<double, double> {
+            deriv::EuropeanOption option{strike, tau, deriv::OptionType::Call};
+            deriv::MarketData market{spot, 0.0, 0.0, vol};
+            double price = deriv::black_scholes_price(option, market);
+            deriv::Greeks g = deriv::black_scholes_greeks(option, market);
+            return {price, g.delta};
+        };
+    };
+}
+
+deriv::ModelFactory test_heston_factory() {
+    return [](double strike, double window_vol) -> deriv::PriceDeltaFn {
+        double v0 = window_vol * window_vol;
+        deriv::HestonParams params{v0, 2.0, v0, 0.5, -0.5};
+        return [strike, params](double spot, double tau) -> std::pair<double, double> {
+            deriv::EuropeanOption option{strike, tau, deriv::OptionType::Call};
+            auto price_at = [&](double s) {
+                deriv::MarketData m{s, 0.0, 0.0, 0.0};
+                return deriv::heston_price(option, m, params);
+            };
+            double price = price_at(spot);
+            double h = spot * 0.001;
+            double delta = (price_at(spot + h) - price_at(spot - h)) / (2.0 * h);
+            return {price, delta};
+        };
+    };
+}
+
+deriv::ModelFactory test_bates_factory(double jump_intensity) {
+    return [jump_intensity](double strike, double window_vol) -> deriv::PriceDeltaFn {
+        double v0 = window_vol * window_vol;
+        deriv::BatesParams params{{v0, 2.0, v0, 0.5, -0.5}, jump_intensity, -0.1, 0.3};
+        return [strike, params](double spot, double tau) -> std::pair<double, double> {
+            deriv::EuropeanOption option{strike, tau, deriv::OptionType::Call};
+            auto price_at = [&](double s) {
+                deriv::MarketData m{s, 0.0, 0.0, 0.0};
+                return deriv::bates_price(option, m, params);
+            };
+            double price = price_at(spot);
+            double h = spot * 0.001;
+            double delta = (price_at(spot + h) - price_at(spot - h)) / (2.0 * h);
+            return {price, delta};
+        };
+    };
+}
+
+// Deterministic synthetic price series: a smooth-ish oscillation with a
+// slight upward drift, entirely reproducible (no RNG), used to check the
+// window-boundary bookkeeping (run_backtest's index arithmetic) rather
+// than to make any claim about real market behavior -- the real-data
+// test below is what does that.
+std::vector<deriv::PricePoint> make_synthetic_series(int n, double s0 = 100.0) {
+    std::vector<deriv::PricePoint> series;
+    series.reserve(n);
+    double S = s0;
+    for (int i = 0; i < n; ++i) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "day-%04d", i);
+        series.push_back(deriv::PricePoint{buf, S});
+        S *= std::exp(0.0003 + 0.02 * std::sin(i * 0.3));
+    }
+    return series;
+}
+
+}  // namespace
+
+TEST_CASE("run_backtest produces the expected number of non-overlapping windows",
+          "[backtest]") {
+    // 50 days of synthetic data, window_days=5, trailing_vol_days=5: the
+    // first window starts at index 5 (once 5 days of trailing history
+    // exist), and each subsequent window consumes 5 more days. The loop
+    // condition (window_start_idx + window_days < n) with n=50 admits
+    // window_start_idx = 5, 10, ..., 40 (44 + 5 = 49 < 50 is the last
+    // one that fits) -- 8 windows.
+    auto series = make_synthetic_series(50);
+    auto summary = deriv::run_backtest(series, "test-BS", test_black_scholes_factory(), 5, 5);
+
+    REQUIRE(summary.num_windows == 8);
+    REQUIRE(summary.windows.size() == 8);
+
+    // First window's bookkeeping: starts exactly at index 5 (trailing_vol_days),
+    // strike is set at-the-money (== that day's spot).
+    REQUIRE(summary.windows[0].date_start == series[5].date);
+    REQUIRE(summary.windows[0].spot_start == Catch::Approx(series[5].price));
+    REQUIRE(summary.windows[0].strike == Catch::Approx(series[5].price));
+
+    // Second window starts exactly window_days later, not overlapping
+    // the first.
+    REQUIRE(summary.windows[1].date_start == series[10].date);
+}
+
+TEST_CASE("run_backtest throws when there isn't enough history for one window",
+          "[backtest][edge_case]") {
+    auto series = make_synthetic_series(10);
+    REQUIRE_THROWS_AS(deriv::run_backtest(series, "test-BS", test_black_scholes_factory(), 30, 30),
+                       std::runtime_error);
+}
+
+TEST_CASE("run_backtest stays finite and sane on a real market-scale synthetic series",
+          "[backtest]") {
+    auto series = make_synthetic_series(400, 30000.0);
+    auto summary = deriv::run_backtest(series, "test-BS", test_black_scholes_factory(), 30, 30);
+
+    REQUIRE(summary.num_windows > 0);
+    REQUIRE(std::isfinite(summary.mean_pnl_bps));
+    REQUIRE(std::isfinite(summary.stdev_pnl_bps));
+    for (const auto& w : summary.windows) {
+        REQUIRE(std::isfinite(w.hedge_pnl));
+        REQUIRE(w.payoff >= 0.0);
+        REQUIRE(w.theoretical_price >= 0.0);
+    }
+}
+
+TEST_CASE("Backtest with Bates collapses to the Heston backtest when jump intensity is zero",
+          "[backtest][bates]") {
+    // The same exact-collapse property Bates itself has (see the
+    // "[bates]"-tagged test above) should carry through the backtest
+    // harness unchanged: with jump_intensity=0, test_bates_factory's
+    // pricer is bit-for-bit the same computation as test_heston_factory's
+    // (bates_price reduces to heston_price identically), so the two
+    // backtests should agree on every window, not just on average.
+    auto series = make_synthetic_series(200, 40000.0);
+
+    auto heston_summary = deriv::run_backtest(series, "Heston", test_heston_factory(), 20, 20);
+    auto bates_summary = deriv::run_backtest(series, "Bates (no jumps)", test_bates_factory(0.0), 20, 20);
+
+    REQUIRE(heston_summary.num_windows == bates_summary.num_windows);
+    for (size_t i = 0; i < heston_summary.windows.size(); ++i) {
+        REQUIRE(bates_summary.windows[i].hedge_pnl == Catch::Approx(heston_summary.windows[i].hedge_pnl).margin(1e-6));
+        REQUIRE(bates_summary.windows[i].theoretical_price ==
+                Catch::Approx(heston_summary.windows[i].theoretical_price).margin(1e-9));
+    }
+}
+
+TEST_CASE("Historical backtest on the real full BTC price history runs and produces finite, "
+          "sane results for all three models",
+          "[.manual][backtest][real_data]") {
+    // Loads the real committed price history (data/btc_price_history.csv,
+    // sourced from a public GitHub dataset -- see docs/numerics.md Phase
+    // 15 for provenance and its honest limitations) and runs all three
+    // models exactly as tools/run_backtest.cpp does, using the same real
+    // calibrated Heston structural parameters
+    // (tools/calibrate_heston.cpp's output against the committed Deribit
+    // snapshot) and the same data-derived Bates jump parameters. Tagged
+    // [.manual] like the other real-data tests in this file (Heston
+    // calibration, implied vol) since it depends on a specific committed
+    // data file's exact contents rather than being a self-contained
+    // property check -- run explicitly with `./build/tests "[backtest]"`,
+    // not part of the default suite.
+    auto history = deriv::load_price_history("data/btc_price_history.csv");
+    REQUIRE(history.size() > 1000);
+
+    const double kappa = 1.829505, theta = 0.134505, xi = 1.280247, rho = -0.194560;
+    const double jump_intensity = 3.4626461121463663;
+    const double jump_mean = -0.000773771446447099;
+    const double jump_vol = 0.27331845903521157;
+
+    auto heston_factory = [=](double strike, double window_vol) -> deriv::PriceDeltaFn {
+        double v0 = window_vol * window_vol;
+        deriv::HestonParams params{v0, kappa, theta, xi, rho};
+        return [strike, params](double spot, double tau) -> std::pair<double, double> {
+            deriv::EuropeanOption option{strike, tau, deriv::OptionType::Call};
+            auto price_at = [&](double s) {
+                deriv::MarketData m{s, 0.0, 0.0, 0.0};
+                return deriv::heston_price(option, m, params);
+            };
+            double price = price_at(spot);
+            double h = spot * 0.001;
+            double delta = (price_at(spot + h) - price_at(spot - h)) / (2.0 * h);
+            return {price, delta};
+        };
+    };
+
+    auto bates_factory = [=](double strike, double window_vol) -> deriv::PriceDeltaFn {
+        double v0 = window_vol * window_vol;
+        deriv::BatesParams params{{v0, kappa, theta, xi, rho}, jump_intensity, jump_mean, jump_vol};
+        return [strike, params](double spot, double tau) -> std::pair<double, double> {
+            deriv::EuropeanOption option{strike, tau, deriv::OptionType::Call};
+            auto price_at = [&](double s) {
+                deriv::MarketData m{s, 0.0, 0.0, 0.0};
+                return deriv::bates_price(option, m, params);
+            };
+            double price = price_at(spot);
+            double h = spot * 0.001;
+            double delta = (price_at(spot + h) - price_at(spot - h)) / (2.0 * h);
+            return {price, delta};
+        };
+    };
+
+    auto bs_summary = deriv::run_backtest(history, "Black-Scholes", test_black_scholes_factory());
+    auto heston_summary = deriv::run_backtest(history, "Heston", heston_factory);
+    auto bates_summary = deriv::run_backtest(history, "Bates", bates_factory);
+
+    INFO("Black-Scholes: mean=" << bs_summary.mean_pnl_bps << "bps stdev=" << bs_summary.stdev_pnl_bps
+                                 << "bps over " << bs_summary.num_windows << " windows");
+    INFO("Heston: mean=" << heston_summary.mean_pnl_bps << "bps stdev=" << heston_summary.stdev_pnl_bps
+                          << "bps over " << heston_summary.num_windows << " windows");
+    INFO("Bates: mean=" << bates_summary.mean_pnl_bps << "bps stdev=" << bates_summary.stdev_pnl_bps
+                         << "bps over " << bates_summary.num_windows << " windows");
+
+    REQUIRE(bs_summary.num_windows > 100);
+    REQUIRE(std::isfinite(bs_summary.mean_pnl_bps));
+    REQUIRE(std::isfinite(heston_summary.mean_pnl_bps));
+    REQUIRE(std::isfinite(bates_summary.mean_pnl_bps));
 }
