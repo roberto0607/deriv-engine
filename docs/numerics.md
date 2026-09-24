@@ -844,3 +844,73 @@ vs. ~$69,000 on Coinbase), the Mar 2020 COVID crash low (~$5,800), and
 the Nov 2022 FTX-collapse low (~$15,787) -- all in the right place. Not
 independently reconciled bar-by-bar against exchange data, which is the
 honest limit of this verification.
+
+## Portfolio-level VaR and stress testing (Phase 16)
+
+**Why portfolio delta is one finite difference on the whole book, not a
+sum of per-position Greeks:** `portfolio_delta()` bumps `market.spot` by
+0.1%, reprices EVERY position in the portfolio at both bumped levels via
+the same `PortfolioPricer` the caller supplied, and divides. This is
+deliberately the same choice `backtest.cpp` made for Heston/Bates delta
+(see Phase 15): it works identically no matter what pricer is plugged
+in, including a `PortfolioPricer` that internally dispatches to
+different models for different positions (e.g. pricing near-dated legs
+under Black-Scholes and far-dated legs under Heston within the same
+lambda) -- a sum of per-position analytical Greeks would need every
+model in the book to expose a compatible Greeks interface, which
+Heston/Bates don't have in this codebase (see Phase 15's identical
+reasoning).
+
+**Historical VaR's overlapping windows, vs. the backtest's
+non-overlapping ones:** Phase 15's backtest deliberately used
+non-overlapping 30-day windows, because it needed independent samples to
+average a hedge-P&L statistic across. `historical_var()` wants the
+opposite: the fullest possible empirical sample of "what could a
+horizon-day move look like," so it uses every overlapping start index in
+the price history (day 0-to-1, day 1-to-2, ..., not day 0-to-30, day
+30-to-60). The two functions solve different problems and correctly use
+different windowing for it.
+
+**Monte Carlo VaR's simulator is a third independent copy of the same
+Bates stepping scheme:** `var.cpp`'s `simulate_bates_terminal_spot()`
+duplicates the full-truncation Euler stepping `heston_mc.cpp` and
+`bates_mc.cpp` each already implement separately (per Phase 9's and
+Phase 14's own design: those two files don't share their stepping logic
+with each other either, only the characteristic-function math in
+`heston.cpp`/`bates.cpp` is shared, via `cos_pricing_internal.hpp`). A
+third small, independent implementation of a well-established numerical
+scheme is a deliberate continuation of that existing precedent, not a
+new one introduced here -- and having it be independent (rather than
+calling into `bates_mc.cpp`'s private path-simulation helpers) keeps
+`monte_carlo_var()` a genuinely separate computation from anything else
+in the codebase, which is the entire point of using it as a
+cross-validation check against `historical_var()`.
+
+**Why VaR is reported as a positive number even though P&L is signed:**
+`empirical_quantile()` operates on the raw (signed) P&L distribution --
+negative numbers are losses. `var_95`/`var_99` negate the 5th/1st
+percentile before returning, since "VaR" conventionally means "the size
+of the loss," not "the P&L value below which 5%/1% of outcomes fall"
+(which would itself already be a large negative number for a risky
+book). This is purely a reporting convention -- the underlying quantile
+computation is unchanged either way.
+
+**The nearest-rank quantile, and why not interpolated:**
+`empirical_quantile()` takes `sorted[floor(p * n)]` directly rather than
+interpolating between the two nearest ranks. At the sample sizes actually
+used here (the full historical return series, or thousands of Monte
+Carlo paths), the difference between nearest-rank and interpolated
+quantiles is well under the precision anything downstream cares about,
+and nearest-rank is simpler to state and verify by hand -- a deliberate
+simplicity choice, not an oversight of a "more correct" method.
+
+**Stress testing decrements time-to-expiry by the REAL elapsed days, not
+a fixed horizon:** `run_stress_test()` reads `start_idx`/`end_idx`
+directly off pointer arithmetic into the (contiguous, gap-free) price
+history vector to get the exact number of calendar days between a
+scenario's two dates, rather than parsing the date strings into a
+calendar type (which nothing else in this codebase needs and would be
+real scope creep to add just for this). The 2021-2022 bear market
+scenario spans 376 days, not "1 day" or some other placeholder -- every
+option in the book is genuinely 376 days closer to expiry (floored at 0
+via `decay_time()`) when that scenario's P&L is computed.

@@ -65,6 +65,7 @@ engine's Heston model is calibrated to reproduce.
 | Barrier options (path-dependent MC) | All 4 knock-in/knock-out directions | Down-and-out call matches a method-of-images closed form; the other 3 directions validated via the model-independent in/out parity identity (knock-out + knock-in = vanilla) |
 | Bates model (Heston + Merton jumps) | Adds discontinuous jumps on top of Heston's diffusion — a jump-diffusion closed-form via the COS method, reusing Heston's own characteristic function rather than re-deriving it | Collapses exactly to Heston when jump intensity is zero; collapses to closed-form Merton (1976) jump-diffusion in the deterministic-variance limit; independently cross-checked against a full Monte Carlo simulation of the actual Bates SDE + jump process |
 | Historical delta-hedging backtest | Do Black-Scholes/Heston/Bates hedge ratios track *real* BTC price history, day by day — not just synthetic Monte Carlo paths | Rolling 30-day at-the-money calls, delta-hedged daily against 16 years of real BTC price history (2010-2026, 195 windows): Bates (jump-aware) shows both the highest mean hedge P&L (+225.8bps) and the lowest variance (430.7bps) of the three models, consistent whether measured over the full history or restricted to 2016+ (Deribit's own era) |
+| Portfolio-level VaR and stress testing | Cross-validates two genuinely independent risk methods against each other, and exposes the classic blind spot of the naive one | On a short-gamma example book: real historical simulation and Monte Carlo (Bates SDE) VaR agree within ~2.3x at the 99% level (9.9k vs. 6.8k at 95%, 37.8k vs. 16.3k at 99%); delta-normal VaR — the fast textbook approximation — misses badly at 99% (3.95k, roughly a tenth of what the two repricing-based methods find) because it can't see the book's gamma. Stress-tested against 3 real historical crashes (COVID, FTX collapse, the full 2021-2022 bear market) |
 
 Every method above independently arrives at the same price for the
 same European option — four structurally different approaches
@@ -136,6 +137,15 @@ evidence for this engine.
   dataset, spot-checked against 4 known price points) and every honest
   limitation (no historical implied vol, jump parameters from a simple
   threshold heuristic) written down in `docs/phase-log.md` Phase 15.
+- **VaR cross-validated the same way every model in this project has
+  been.** Rather than trust one risk number, Phase 16 computes portfolio
+  VaR two genuinely independent ways — replaying real historical returns,
+  and simulating forward under the calibrated Bates SDE — and checks
+  they agree, the same "two methods that share no code" discipline used
+  for Heston (COS vs. Monte Carlo) and Bates (COS vs. SDE simulation) in
+  every earlier phase. A third, textbook delta-normal method is included
+  specifically to show what it misses (gamma) on a real options book —
+  not held up as a third equally-trustworthy answer.
 
 ## Build & test
 

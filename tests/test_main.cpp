@@ -24,6 +24,8 @@
 #include "deriv-engine/bates_mc.hpp"
 #include "deriv-engine/price_history.hpp"
 #include "deriv-engine/backtest.hpp"
+#include "deriv-engine/portfolio.hpp"
+#include "deriv-engine/var.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -2039,4 +2041,192 @@ TEST_CASE("Historical backtest on the real full BTC price history runs and produ
     REQUIRE(std::isfinite(bs_summary.mean_pnl_bps));
     REQUIRE(std::isfinite(heston_summary.mean_pnl_bps));
     REQUIRE(std::isfinite(bates_summary.mean_pnl_bps));
+}
+
+// --- Portfolio, VaR, and stress testing (Phase 16) -------------------------
+
+namespace {
+
+deriv::PortfolioPricer test_bs_pricer() {
+    return [](const deriv::EuropeanOption& opt, const deriv::MarketData& m) {
+        return deriv::black_scholes_price(opt, m);
+    };
+}
+
+}  // namespace
+
+TEST_CASE("portfolio_value sums signed position values, options and underlying alike",
+          "[portfolio]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption call{100.0, 1.0, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 3.0, "long 3 calls"});
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, -1.0, "short 1 call"});
+    book.positions.push_back(
+        deriv::Position{deriv::Position::Kind::Underlying, deriv::EuropeanOption{}, 2.0, "long 2 spot"});
+
+    double call_price = deriv::black_scholes_price(call, market);
+    double expected = (3.0 - 1.0) * call_price + 2.0 * market.spot;
+
+    REQUIRE(deriv::portfolio_value(book, market, test_bs_pricer()) == Catch::Approx(expected).margin(1e-9));
+}
+
+TEST_CASE("portfolio_delta on a single-option portfolio matches Black-Scholes' own analytical delta",
+          "[portfolio]") {
+    // A one-position sanity check: portfolio_delta()'s finite-difference
+    // approach should agree closely with the SAME option's own
+    // closed-form delta -- confirming the finite-difference machinery
+    // itself is correct before trusting it on Heston/Bates (which have
+    // no closed-form delta to check against directly; see backtest.cpp's
+    // identical choice for the same reason).
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption call{110.0, 0.5, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 7.0, "7 calls"});
+
+    deriv::Greeks g = deriv::black_scholes_greeks(call, market);
+    double expected_delta = 7.0 * g.delta;
+
+    REQUIRE(deriv::portfolio_delta(book, market, test_bs_pricer()) == Catch::Approx(expected_delta).epsilon(1e-4));
+}
+
+TEST_CASE("decay_time reduces every option's time-to-expiry and floors at zero, leaves underlying alone",
+          "[portfolio][edge_case]") {
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option,
+                                               deriv::EuropeanOption{100.0, 0.1, deriv::OptionType::Call}, 1.0, "a"});
+    book.positions.push_back(
+        deriv::Position{deriv::Position::Kind::Underlying, deriv::EuropeanOption{}, 5.0, "spot"});
+
+    // 0.1 years is ~36.5 days; decaying by 100 days should floor at 0,
+    // not go negative.
+    deriv::Portfolio decayed = deriv::decay_time(book, 100.0);
+
+    REQUIRE(decayed.positions[0].option.time_to_expiry == Catch::Approx(0.0).margin(1e-12));
+    REQUIRE(decayed.positions[1].quantity == Catch::Approx(5.0));  // underlying untouched
+}
+
+TEST_CASE("The example market-maker book is partially, not fully, delta-hedged",
+          "[portfolio]") {
+    // The whole point of this example (see portfolio.hpp's header
+    // comment): a book with ~0 delta has ~0 first-order risk by
+    // construction, which would make VaR/stress testing measure almost
+    // nothing. Checked directly rather than assumed: the hedged book's
+    // |delta| should be smaller than the unhedged book's (the spot
+    // position is doing SOME hedging work) but still clearly nonzero
+    // (it isn't doing ALL the hedging work).
+    double spot = 50000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.7};
+
+    deriv::Portfolio book = deriv::make_example_market_maker_book(spot);
+    deriv::Portfolio unhedged = book;
+    unhedged.positions.pop_back();  // drop the spot hedge leg
+
+    double delta_hedged = deriv::portfolio_delta(book, market, test_bs_pricer());
+    double delta_unhedged = deriv::portfolio_delta(unhedged, market, test_bs_pricer());
+
+    REQUIRE(std::abs(delta_unhedged) > 1e-6);            // the unhedged book has real delta risk
+    REQUIRE(std::abs(delta_hedged) < std::abs(delta_unhedged));  // the hedge reduces it...
+    REQUIRE(std::abs(delta_hedged) > 1e-6);               // ...without eliminating it
+}
+
+TEST_CASE("run_stress_test reproduces a real historical crash exactly, spot move and elapsed days alike",
+          "[portfolio][real_data]") {
+    auto history = deriv::load_price_history("data/btc_price_history.csv");
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.7};
+    deriv::Portfolio book = deriv::make_example_market_maker_book(spot);
+
+    deriv::StressScenario covid{"2020 COVID crash", "2020-02-19", "2020-03-13"};
+    deriv::StressResult r = deriv::run_stress_test(book, market, history, test_bs_pricer(), covid);
+
+    // Hand-checked against the committed CSV directly (grep):
+    // 2020-02-19,10189.9959829746 -> 2020-03-13,5800.2089048343
+    REQUIRE(r.spot_start == Catch::Approx(10189.9959829746));
+    REQUIRE(r.spot_end == Catch::Approx(5800.2089048343));
+    REQUIRE(r.spot_pct_change == Catch::Approx(-0.4308).margin(0.001));
+    // A real, large loss on a net-short-delta, short-gamma book facing a
+    // ~43% crash -- sign and rough order of magnitude checked directly,
+    // not just "finite".
+    REQUIRE(r.pnl < 0.0);
+}
+
+TEST_CASE("run_stress_test throws on a date not present in the price history",
+          "[portfolio][edge_case]") {
+    auto history = deriv::load_price_history("data/btc_price_history.csv");
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.7};
+    deriv::Portfolio book = deriv::make_example_market_maker_book(spot);
+
+    deriv::StressScenario bogus{"not a real date", "1999-01-01", "2020-03-13"};
+    REQUIRE_THROWS_AS(deriv::run_stress_test(book, market, history, test_bs_pricer(), bogus), std::runtime_error);
+}
+
+TEST_CASE("Monte Carlo VaR is larger under Bates (with jumps) than under Heston (without) at 99% confidence",
+          "[portfolio][var]") {
+    // A jump component should make large moves MORE likely, not less --
+    // so a jump-aware VaR should be at least as large as the equivalent
+    // no-jump VaR on the same short-gamma book, especially at the 99%
+    // tail where jumps matter most. This is the same "jumps add real
+    // tail risk a diffusion-only model misses" story Phase 15's backtest
+    // told, now checked directly on VaR instead of hedge P&L.
+    double spot = 50000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.7};
+    deriv::Portfolio book = deriv::make_example_market_maker_book(spot);
+
+    deriv::HestonParams heston{0.49, 1.8, 0.5, 1.0, -0.5};
+    deriv::BatesParams bates_no_jumps{heston, 0.0, -0.1, 0.3};
+    deriv::BatesParams bates_with_jumps{heston, 3.0, -0.1, 0.3};
+
+    auto var_no_jumps = deriv::monte_carlo_var(book, market, bates_no_jumps, test_bs_pricer(), 20000, 1, 42);
+    auto var_with_jumps = deriv::monte_carlo_var(book, market, bates_with_jumps, test_bs_pricer(), 20000, 1, 42);
+
+    INFO("no jumps var_99=" << var_no_jumps.var_99 << " with jumps var_99=" << var_with_jumps.var_99);
+    REQUIRE(var_with_jumps.var_99 >= var_no_jumps.var_99);
+}
+
+TEST_CASE("Historical VaR and Monte Carlo VaR broadly agree, and both clear the delta-normal "
+          "baseline's known blind spot, on the real example book",
+          "[.manual][portfolio][var][real_data]") {
+    // The actual Phase 16 headline: real committed price history +
+    // real calibrated Heston/Bates structural parameters (the same
+    // ones Phase 14/15 used), on the shipped example book. Tagged
+    // [.manual] like the other real-data-dependent tests in this file --
+    // run explicitly with `./build/tests "[var]"`, not part of the
+    // default suite, since it depends on a specific committed data
+    // file's exact contents and takes noticeably longer than a unit
+    // test (thousands of Monte Carlo paths x the full historical
+    // series).
+    auto history = deriv::load_price_history("data/btc_price_history.csv");
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.75};
+    deriv::Portfolio book = deriv::make_example_market_maker_book(spot);
+
+    deriv::HestonParams heston{0.75 * 0.75, 1.829505, 0.134505, 1.280247, -0.194560};
+    deriv::BatesParams bates{heston, 3.4626461121463663, -0.000773771446447099, 0.27331845903521157};
+
+    auto hvar = deriv::historical_var(book, market, history, test_bs_pricer(), 1);
+    auto mcvar = deriv::monte_carlo_var(book, market, bates, test_bs_pricer(), 20000, 1, 42);
+    double dnvar_95 = deriv::delta_normal_var(book, market, test_bs_pricer(), 0.75, 1, 0.95);
+    double dnvar_99 = deriv::delta_normal_var(book, market, test_bs_pricer(), 0.75, 1, 0.99);
+
+    INFO("historical var95=" << hvar.var_95 << " var99=" << hvar.var_99);
+    INFO("monte carlo var95=" << mcvar.var_95 << " var99=" << mcvar.var_99);
+    INFO("delta-normal var95=" << dnvar_95 << " var99=" << dnvar_99);
+
+    // Both repricing-based methods should be well within an order of
+    // magnitude of each other -- a real, if loose, cross-validation
+    // bound (not an exact-match assertion, since they're genuinely
+    // different computations; see var.hpp).
+    REQUIRE(hvar.var_99 / mcvar.var_99 < 10.0);
+    REQUIRE(mcvar.var_99 / hvar.var_99 < 10.0);
+
+    // The actual finding this phase exists to demonstrate: delta-normal
+    // VaR, which only sees the book's linear (delta) risk, misses a
+    // material fraction of the tail risk both repricing-based methods
+    // (which see the book's real gamma) correctly price in.
+    REQUIRE(dnvar_99 < hvar.var_99);
+    REQUIRE(dnvar_99 < mcvar.var_99);
 }

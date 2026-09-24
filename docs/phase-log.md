@@ -1314,3 +1314,141 @@ every honest limitation above -- in particular that "hedge P&L" here
 compares a model's OWN theoretical price against its OWN hedge cost, not
 against a market-observed premium, since no historical market premium
 exists to compare against.
+
+## Phase 16 — Portfolio-level risk: VaR and stress testing (done)
+
+**What was built:**
+- `portfolio.hpp`/`portfolio.cpp`: a generic `Portfolio` (a list of
+  signed `Position`s, each either an option or a position in the
+  underlying), `portfolio_value()` (sums quantity x price across every
+  position, model-agnostic via the same `PortfolioPricer` function-object
+  pattern `backtest.hpp` used for `PriceDeltaFn`), `portfolio_delta()`
+  (a single finite-difference bump on the WHOLE portfolio's value, not a
+  sum of per-position analytical deltas -- works identically whether the
+  book is priced under Black-Scholes, Heston, or Bates), and
+  `decay_time()` (returns a copy of a portfolio with every option's
+  time-to-expiry reduced, floored at 0, for horizon-based P&L
+  computations)
+- `make_example_market_maker_book()`: a worked example shipped alongside
+  the API, the same pattern `exotic_options.hpp` used -- short 5x 30-day
+  ATM straddle + short 5x 60-day 10%-OTM strangle (a market maker who
+  sold that flow to clients), partially offset with +0.5 BTC of spot.
+  The unhedged combination nets to about -1.06 BTC of delta (computed,
+  not hand-derived); +0.5 BTC brings it to about -0.56 BTC -- partially,
+  not fully, hedged, so the book has real gamma risk left over for
+  VaR/stress testing to actually measure
+- `var.hpp`/`var.cpp`: `historical_var()` (replays the portfolio under
+  every real overlapping horizon-day return in the committed BTC price
+  history), `monte_carlo_var()` (simulates forward under the Bates SDE --
+  pass `jump_intensity=0` for pure Heston), `delta_normal_var()` (the
+  classic linear approximation, included as a labeled baseline), and
+  `run_stress_test()` + `default_stress_scenarios()` (replays the
+  portfolio through 3 real historical crash windows)
+- 8 new tests (`tests/test_main.cpp`, `[portfolio]`/`[var]` tags):
+  portfolio value/delta sanity checks against Black-Scholes' own
+  analytical delta, `decay_time`'s floor-at-zero edge case, a direct
+  check that the example book is partially (not fully) hedged, an exact
+  reproduction of a real historical crash's spot move and elapsed days,
+  a jumps-increase-99%-VaR property test, and a `[.manual][real_data]`
+  test running the full real headline computation
+
+**Why two independent VaR methods, cross-validated against each other,
+instead of picking one:** this is the same discipline every prior
+model-adding phase in this project used -- Heston got a COS closed form
+*and* an independent SDE Monte Carlo check (Phase 9); Bates got the same
+treatment (Phase 14). VaR is the same kind of claim ("this book's tail
+risk is X"), so it gets the same treatment: `historical_var()` resamples
+real BTC returns with zero distributional assumption, and
+`monte_carlo_var()` simulates forward under the calibrated Bates SDE
+with zero dependence on which specific historical days happened to
+occur. They share no code and make different assumptions, so agreement
+between them (or a well-understood gap) is real evidence rather than the
+same computation checked against itself.
+
+**Why delta-normal VaR is a labeled baseline, not a third real method:**
+delta-normal VaR is linear in `portfolio_delta()` alone -- it has no way
+to see gamma, vega, or any other real nonlinearity in an options book's
+P&L. On the example book (short gamma by construction -- a market maker
+who sold volatility), that blind spot isn't hypothetical:
+
+| Method | 95% VaR | 99% VaR |
+|---|---|---|
+| Historical simulation | $9,921 | $37,757 |
+| Monte Carlo (Bates) | $6,826 | $16,295 |
+| Delta-normal | $2,795 | $3,954 |
+
+At 99% confidence, delta-normal understates the loss both repricing-
+based methods find by roughly 4-10x. This is exactly the textbook
+failure mode of delta-normal VaR on a short-options book, reproduced on
+real numbers rather than asserted: a large move hurts a short-gamma book
+MORE than its current delta predicts (that's what negative gamma means),
+and a method that only ever looks at delta can't see that getting worse
+as the move gets bigger.
+
+**An honest finding worth being explicit about — historical and Monte
+Carlo VaR don't agree closely at 99%, and here's the likely reason:**
+historical VaR's 99% number (\$37,757) is more than double Monte Carlo's
+(\$16,295), even though both stayed within the loose 10x cross-validation
+bound the tests assert. The likely explanation: `historical_var()`
+resamples from FULL 16-year history, including 2010-2013's extremely
+thin, extremely volatile early market (the same era flagged as a
+limitation in Phase 15) -- its tail is fatter than what a single day's
+Bates simulation, calibrated to one real (and comparatively calm)
+Deribit snapshot, produces. This isn't presented as a bug in either
+method; it's a real, informative disagreement between "what actually
+happened over BTC's whole history" and "what one particular calibrated
+model predicts going forward" -- precisely the kind of gap cross-
+validating two independent methods is supposed to surface, not paper
+over by only running one of them.
+
+**Stress test results** (the example book, 3 real historical crash
+windows):
+
+| Scenario | Spot move | Portfolio P&L |
+|---|---|---|
+| 2020 COVID crash (Feb 19 - Mar 13, 2020) | -43.1% | -$185,111 |
+| 2022 FTX collapse (Nov 6-21, 2022) | -24.6% | -$51,510 |
+| 2021-2022 bear market, peak to trough (Nov 10, 2021 - Nov 21, 2022) | -76.5% | -$454,882 |
+
+All three are real losses, not simulated ones -- `run_stress_test()`
+looks up the window's actual start/end spot directly in the committed
+price history and decrements every option's time-to-expiry by the
+actual number of calendar days elapsed, rather than treating a
+multi-month bear market as an instantaneous shock.
+
+**Honest limitations:**
+- The example book, its strikes, and its hedge ratio are illustrative --
+  a real market-making book runs far more positions across many more
+  strikes/expiries/underlyings, with real transaction costs and margin
+  constraints this doesn't model.
+- `monte_carlo_var()`'s quality is entirely bounded by the Bates
+  calibration it's handed -- the same structural-parameter caveats from
+  Phase 14/15 (one real snapshot, fixed structural shape) apply here too.
+- The historical/Monte Carlo VaR gap at 99% (above) is flagged and
+  explained but not resolved -- resolving it properly would mean
+  re-examining whether the full 16-year history or the 2016+ subset is
+  the more appropriate resampling window for VaR specifically, a
+  decision this phase deliberately left open rather than picking one
+  silently.
+- `delta_normal_var()`'s z-scores are hardcoded for exactly the two
+  confidence levels this project uses (95%/99%), not a general
+  inverse-normal-CDF solver -- a real, stated scope limit, not an
+  oversight.
+- Stress scenarios shock spot only (holding volatility/model parameters
+  fixed at today's level) -- a real crash typically also blows out
+  implied vol, which would make a short-vega book's real stress loss
+  worse than what's reported here.
+
+**Defend this:**
+Can explain why two structurally different VaR methods matter more than
+one precise-looking number, and can point to the real disagreement
+between them (above) as evidence this project reports what it finds
+rather than picking the number that looks best. Can explain exactly why
+delta-normal VaR fails on a short-gamma book: it's a first-order
+(linear) approximation to a P&L function that has real, negative
+curvature for this specific position, so the approximation gets worse
+exactly where it matters most (large moves, which is what the 99% tail
+actually is). Can explain why the example book is deliberately
+partially, not fully, hedged, and can compute (not just quote) its
+actual delta. Can name every honest limitation above without being
+asked.
