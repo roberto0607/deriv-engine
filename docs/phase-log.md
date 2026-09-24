@@ -977,16 +977,20 @@ its knock-in partition every path — to validate the other three
 directions instead. A smaller, fully-trustworthy validation surface over
 a larger, riskier one.
 
-**Why these aren't wired into the live WASM demo:** consistent with the
-Phase 12 multi-expiry Heston tool, this phase adds engine code, tests,
-and documentation, but leaves the demo page itself unchanged. The demo's
-existing cards each answer one question with one headline number; Asian
-and Barrier pricing need their own inputs (monitoring frequency, barrier
-level and direction) that don't fit the existing layout without a UI
-redesign — a deliberate scope decision, not an oversight, and one that
-also keeps the live-demo UI itself untouched and low-risk, per the
-project's earlier decision to verify the UI carefully before touching it
-further.
+**Follow-up: wired into the live WASM demo in its own card.** Shipped
+initially without touching the demo page (a deliberate first-cut scope
+decision, keeping the live UI untouched and low-risk while the pricing
+code itself was new). Once the engine side was verified working, a
+second "Exotic options" card was added (`docs/index.html` section 07,
+`wasm_bridge.cpp`'s `bridge_asian_price`/`bridge_barrier_price`/
+`bridge_geometric_asian_closed_form`/`bridge_down_and_out_call_closed_form`),
+with its own inputs (monitoring steps; barrier level and direction for
+Barrier) rather than forcing them into the existing calculator's layout.
+The card runs the same validation checks documented above live in the
+browser — geometric Asian MC against its closed form, and for Barrier,
+the selected direction against its same-barrier opposite side with the
+sum checked against vanilla, plus the down-and-out closed form when
+valid — so a visitor sees the correctness argument, not just a price.
 
 **Defend this:**
 Can explain why vanilla European Monte Carlo samples only the terminal

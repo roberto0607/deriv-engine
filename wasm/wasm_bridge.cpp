@@ -11,6 +11,7 @@
 #include "deriv-engine/monte_carlo.hpp"
 #include "deriv-engine/implied_vol.hpp"
 #include "deriv-engine/heston.hpp"
+#include "deriv-engine/exotic_options.hpp"
 
 #include <emscripten/emscripten.h>
 
@@ -37,6 +38,14 @@ EuropeanOption make_euro(double strike, double T, int type) {
 
 AmericanOption make_amer(double strike, double T, int type) {
     AmericanOption o;
+    o.strike = strike;
+    o.time_to_expiry = T;
+    o.type = (type == 0) ? OptionType::Call : OptionType::Put;
+    return o;
+}
+
+AsianOption make_asian(double strike, double T, int type) {
+    AsianOption o;
     o.strike = strike;
     o.time_to_expiry = T;
     o.type = (type == 0) ? OptionType::Call : OptionType::Put;
@@ -136,6 +145,67 @@ double bridge_heston_price(double spot, double rate, double div,
     // volatility is unused by heston_price -- Heston prices off params, not market.volatility.
     return heston_price(make_euro(strike, T, type),
                          make_market(spot, rate, div, 0.0), params);
+}
+
+// Asian option, Monte Carlo. geometric: 0 = arithmetic average (the real
+// payoff), 1 = geometric average (validation-only -- see
+// bridge_geometric_asian_closed_form below). Writes [price, standard_error].
+EMSCRIPTEN_KEEPALIVE
+void bridge_asian_price(double spot, double rate, double div, double vol,
+                         double strike, double T, int type,
+                         int num_paths, int num_steps, unsigned int seed,
+                         int geometric, double* out) {
+    AsianOption o = make_asian(strike, T, type);
+    AsianResult r = (geometric != 0)
+        ? geometric_asian_price_mc(o, make_market(spot, rate, div, vol), num_paths, num_steps, seed)
+        : asian_option_price_mc(o, make_market(spot, rate, div, vol), num_paths, num_steps, seed);
+    out[0] = r.price;
+    out[1] = r.standard_error;
+}
+
+// Kemna-Vorst closed form for the geometric-average Asian option --
+// exists to validate the Monte Carlo path simulation above, not as a
+// price for the real (arithmetic-average) instrument.
+EMSCRIPTEN_KEEPALIVE
+double bridge_geometric_asian_closed_form(double spot, double rate, double div, double vol,
+                                           double strike, double T, int type, int num_steps) {
+    AsianOption o = make_asian(strike, T, type);
+    return geometric_asian_price_closed_form(o, make_market(spot, rate, div, vol), num_steps);
+}
+
+// Barrier option, Monte Carlo. direction: 0=DownAndOut, 1=DownAndIn,
+// 2=UpAndOut, 3=UpAndIn (matches BarrierDirection's declaration order in
+// instrument.hpp). Writes [price, standard_error].
+EMSCRIPTEN_KEEPALIVE
+void bridge_barrier_price(double spot, double rate, double div, double vol,
+                           double strike, double barrier, double T, int type,
+                           int direction, int num_paths, int num_steps, unsigned int seed,
+                           double* out) {
+    BarrierOption o;
+    o.strike = strike;
+    o.barrier = barrier;
+    o.time_to_expiry = T;
+    o.type = (type == 0) ? OptionType::Call : OptionType::Put;
+    o.direction = static_cast<BarrierDirection>(direction);
+    BarrierResult r = barrier_option_price_mc(o, make_market(spot, rate, div, vol),
+                                               num_paths, num_steps, seed);
+    out[0] = r.price;
+    out[1] = r.standard_error;
+}
+
+// Method-of-images closed form for a down-and-out CALL, valid only when
+// barrier <= min(spot, strike) -- see docs/numerics.md Phase 13. Exists
+// to validate bridge_barrier_price above, not as a general barrier formula.
+EMSCRIPTEN_KEEPALIVE
+double bridge_down_and_out_call_closed_form(double spot, double rate, double div, double vol,
+                                             double strike, double barrier, double T) {
+    BarrierOption o;
+    o.strike = strike;
+    o.barrier = barrier;
+    o.time_to_expiry = T;
+    o.type = OptionType::Call;
+    o.direction = BarrierDirection::DownAndOut;
+    return down_and_out_call_price_closed_form(o, make_market(spot, rate, div, vol));
 }
 
 }  // extern "C"

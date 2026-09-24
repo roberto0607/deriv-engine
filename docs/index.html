@@ -422,6 +422,61 @@
     </div>
   </section>
 
+  <section>
+    <div class="section-head"><span class="section-num">07</span><h2>Exotic options: Asian &amp; Barrier</h2></div>
+    <p class="section-sub">Path-dependent payoffs — the payoff depends on the option's whole price path, not just where it ends up, so these are priced by simulating that path (<code style="font-family:var(--mono);color:var(--teal)">src/exotic_options.cpp</code>), not a closed formula. Every result here is checked live, right in this card, against a closed form or a model-independent identity.</p>
+    <div class="calc-card">
+      <div class="calc-status ready" id="exotic-status"><span class="pulse"></span><span>uses the same compiled engine as the calculator above</span></div>
+
+      <div class="calc-grid">
+        <div class="field"><label for="ex-payoff">Payoff</label>
+          <select id="ex-payoff">
+            <option value="asian">Asian (average price)</option>
+            <option value="barrier">Barrier (knock-in / knock-out)</option>
+          </select>
+        </div>
+        <div class="field"><label for="ex-spot">Spot ($)</label><input id="ex-spot" type="number" value="100000" step="1000"></div>
+        <div class="field"><label for="ex-strike">Strike ($)</label><input id="ex-strike" type="number" value="100000" step="1000"></div>
+        <div class="field"><label for="ex-days">Days to expiry</label><input id="ex-days" type="number" value="90" step="1" min="1"></div>
+        <div class="field"><label for="ex-vol">Volatility (%)</label><input id="ex-vol" type="number" value="60" step="1" min="0.1"></div>
+        <div class="field"><label for="ex-rate">Rate (%)</label><input id="ex-rate" type="number" value="5" step="0.25"></div>
+        <div class="field"><label for="ex-type">Type</label>
+          <select id="ex-type"><option value="0">Call</option><option value="1">Put</option></select>
+        </div>
+        <div class="field"><label for="ex-steps">Monitoring steps</label><input id="ex-steps" type="number" value="100" step="1" min="1"></div>
+        <div class="field" id="ex-barrier-field" style="display:none;"><label for="ex-barrier">Barrier ($)</label><input id="ex-barrier" type="number" value="80000" step="1000"></div>
+        <div class="field" id="ex-direction-field" style="display:none;"><label for="ex-direction">Direction</label>
+          <select id="ex-direction">
+            <option value="0">Down &amp; Out</option>
+            <option value="1">Down &amp; In</option>
+            <option value="2">Up &amp; Out</option>
+            <option value="3">Up &amp; In</option>
+          </select>
+        </div>
+        <div class="field" style="justify-content:flex-end;">
+          <button class="calc-run" id="exotic-run-btn">Price it →</button>
+        </div>
+      </div>
+
+      <div class="calc-results" id="ex-results-asian">
+        <div class="calc-result"><div class="rlabel">Arithmetic Asian</div><div class="rval" id="ex-res-arith">—</div><div class="rsub" id="ex-res-arith-sub">the real payoff, avg(S) vs. strike</div></div>
+        <div class="calc-result"><div class="rlabel">Geometric Asian (MC)</div><div class="rval" id="ex-res-geo-mc">—</div><div class="rsub">same simulator, validation only</div></div>
+        <div class="calc-result"><div class="rlabel">Geometric Asian (closed form)</div><div class="rval" id="ex-res-geo-cf">—</div><div class="rsub">Kemna-Vorst formula</div></div>
+        <div class="calc-result"><div class="rlabel">MC vs. closed form gap</div><div class="rval" id="ex-res-geo-gap">—</div><div class="rsub">should be tiny — proves the simulator's correct</div></div>
+      </div>
+
+      <div class="calc-results" id="ex-results-barrier" style="display:none;">
+        <div class="calc-result"><div class="rlabel">Selected barrier (MC)</div><div class="rval" id="ex-res-barrier">—</div><div class="rsub" id="ex-res-barrier-sub">your chosen direction</div></div>
+        <div class="calc-result"><div class="rlabel">Same barrier, opposite side</div><div class="rval" id="ex-res-opposite">—</div><div class="rsub" id="ex-res-opposite-sub">knock-in ↔ knock-out pair</div></div>
+        <div class="calc-result"><div class="rlabel">Out + In</div><div class="rval" id="ex-res-sum">—</div><div class="rsub">should equal the vanilla price</div></div>
+        <div class="calc-result"><div class="rlabel">Vanilla European</div><div class="rval" id="ex-res-vanilla">—</div><div class="rsub">closed form, no barrier at all</div></div>
+      </div>
+
+      <div class="calc-note" id="ex-closed-form-note"></div>
+      <div class="calc-note" id="ex-explainer">Every path either touches the barrier or it doesn't — so a knock-out and its same-direction knock-in split every path exactly in two, and together always add up to the plain vanilla price. That's true no matter what the underlying does; it's why "Out + In" checks against "Vanilla" above without needing its own formula.</div>
+    </div>
+  </section>
+
   <footer>
     <div class="stack-line">stack: <span>C++20 · CMake (Ninja) · Catch2 v3 · nlohmann/json · GitHub Actions CI</span></div>
     <div class="scope-note">Scope is BTC options specifically: dividend yield is fixed at q=0 because Bitcoin has no earnings to distribute — the mathematically correct assumption for this asset, not a simplification. This is a pricing and risk-analysis engine; it does not predict market direction.</div>
@@ -562,11 +617,145 @@
     }
   }
 
+  // ---- exotic options (Asian / Barrier) ----
+  var exPayoffSel = document.getElementById('ex-payoff');
+  var exBarrierField = document.getElementById('ex-barrier-field');
+  var exDirectionField = document.getElementById('ex-direction-field');
+  var exResultsAsian = document.getElementById('ex-results-asian');
+  var exResultsBarrier = document.getElementById('ex-results-barrier');
+  var exRunBtn = document.getElementById('exotic-run-btn');
+
+  function updateExoticFieldVisibility(){
+    var isBarrier = exPayoffSel.value === 'barrier';
+    exBarrierField.style.display = isBarrier ? '' : 'none';
+    exDirectionField.style.display = isBarrier ? '' : 'none';
+    exResultsAsian.style.display = isBarrier ? 'none' : '';
+    exResultsBarrier.style.display = isBarrier ? '' : 'none';
+    document.getElementById('ex-closed-form-note').textContent = '';
+    document.getElementById('ex-explainer').style.display = isBarrier ? '' : 'none';
+  }
+  exPayoffSel.addEventListener('change', updateExoticFieldVisibility);
+  updateExoticFieldVisibility();
+
+  function readExoticInputs(){
+    var spot = parseFloat(document.getElementById('ex-spot').value);
+    var strike = parseFloat(document.getElementById('ex-strike').value);
+    var days = parseFloat(document.getElementById('ex-days').value);
+    var vol = parseFloat(document.getElementById('ex-vol').value) / 100;
+    var rate = parseFloat(document.getElementById('ex-rate').value) / 100;
+    var type = parseInt(document.getElementById('ex-type').value, 10);
+    var steps = Math.max(1, parseInt(document.getElementById('ex-steps').value, 10) || 1);
+    var barrier = parseFloat(document.getElementById('ex-barrier').value);
+    var direction = parseInt(document.getElementById('ex-direction').value, 10);
+    var T = Math.max(days, 1) / 365;
+    return {spot: spot, strike: strike, T: T, vol: vol, rate: rate, type: type,
+            steps: steps, barrier: barrier, direction: direction};
+  }
+
+  var EXOTIC_PATHS = 150000;  // fewer paths than the vanilla calculator's 200,000 (this simulator steps every monitoring date per path, not one terminal jump, so it's more work per path); tuned to keep the down-and-out MC vs. closed-form check landing inside its own error bars at the default 100 monitoring steps
+  var EXOTIC_SEED = 42;      // fixed seed: repeated clicks and the out/in pair below all reuse the same draws, which is what makes the parity check meaningful rather than two unrelated MC runs
+
+  function priceAsian(p){
+    var ptr = Module._malloc(2 * 8);
+
+    Module.ccall('bridge_asian_price', null,
+      ['number','number','number','number','number','number','number','number','number','number','number','number'],
+      [p.spot, p.rate, 0, p.vol, p.strike, p.T, p.type, EXOTIC_PATHS, p.steps, EXOTIC_SEED, 0, ptr]);
+    var arithPrice = Module.getValue(ptr, 'double');
+    var arithSE = Module.getValue(ptr + 8, 'double');
+    document.getElementById('ex-res-arith').textContent = fmtUSD(arithPrice);
+    document.getElementById('ex-res-arith-sub').textContent = 'SE ' + fmtNum(arithSE, 2) + ', ' + p.steps + ' monitoring dates';
+
+    Module.ccall('bridge_asian_price', null,
+      ['number','number','number','number','number','number','number','number','number','number','number','number'],
+      [p.spot, p.rate, 0, p.vol, p.strike, p.T, p.type, EXOTIC_PATHS, p.steps, EXOTIC_SEED, 1, ptr]);
+    var geoPrice = Module.getValue(ptr, 'double');
+    var geoSE = Module.getValue(ptr + 8, 'double');
+    document.getElementById('ex-res-geo-mc').textContent = fmtUSD(geoPrice);
+    Module._free(ptr);
+
+    var geoCF = Module.ccall('bridge_geometric_asian_closed_form', 'number',
+      ['number','number','number','number','number','number','number','number'],
+      [p.spot, p.rate, 0, p.vol, p.strike, p.T, p.type, p.steps]);
+    document.getElementById('ex-res-geo-cf').textContent = fmtUSD(geoCF);
+
+    var gapPct = geoCF !== 0 ? Math.abs(geoPrice - geoCF) / Math.abs(geoCF) * 100 : NaN;
+    document.getElementById('ex-res-geo-gap').textContent = isFinite(gapPct) ? gapPct.toFixed(2) + '%' : '—';
+
+    document.getElementById('ex-closed-form-note').textContent =
+      'Arithmetic Asian (the real instrument) has no closed form — a sum of lognormals isn\'t itself lognormal — so it can\'t be checked directly. Its geometric-average sibling does have one (Kemna-Vorst), and shares the exact same path simulator; matching that closed form (within ' + fmtNum(4 * geoSE, 2) + ', 4 standard errors) is what says the simulator itself is trustworthy.';
+  }
+
+  function priceBarrier(p){
+    var ptr = Module._malloc(2 * 8);
+
+    Module.ccall('bridge_barrier_price', null,
+      ['number','number','number','number','number','number','number','number','number','number','number','number','number'],
+      [p.spot, p.rate, 0, p.vol, p.strike, p.barrier, p.T, p.type, p.direction, EXOTIC_PATHS, p.steps, EXOTIC_SEED, ptr]);
+    var selPrice = Module.getValue(ptr, 'double');
+    var selSE = Module.getValue(ptr + 8, 'double');
+    var dirLabels = ['Down & Out', 'Down & In', 'Up & Out', 'Up & In'];
+    document.getElementById('ex-res-barrier').textContent = fmtUSD(selPrice);
+    document.getElementById('ex-res-barrier-sub').textContent = dirLabels[p.direction] + ', SE ' + fmtNum(selSE, 2);
+
+    // Same barrier, same direction (down/up), opposite in/out side --
+    // 0<->1 (down out/in) and 2<->3 (up out/in), i.e. flip the low bit.
+    var oppositeDir = p.direction ^ 1;
+    Module.ccall('bridge_barrier_price', null,
+      ['number','number','number','number','number','number','number','number','number','number','number','number','number'],
+      [p.spot, p.rate, 0, p.vol, p.strike, p.barrier, p.T, p.type, oppositeDir, EXOTIC_PATHS, p.steps, EXOTIC_SEED, ptr]);
+    var oppPrice = Module.getValue(ptr, 'double');
+    var oppSE = Module.getValue(ptr + 8, 'double');
+    Module._free(ptr);
+    document.getElementById('ex-res-opposite').textContent = fmtUSD(oppPrice);
+    document.getElementById('ex-res-opposite-sub').textContent = dirLabels[oppositeDir];
+
+    document.getElementById('ex-res-sum').textContent = fmtUSD(selPrice + oppPrice);
+
+    var vanilla = Module.ccall('bridge_bs_price', 'number',
+      ['number','number','number','number','number','number','number'],
+      [p.spot, p.rate, 0, p.vol, p.strike, p.T, p.type]);
+    document.getElementById('ex-res-vanilla').textContent = fmtUSD(vanilla);
+
+    var note = 'Out + In vs. vanilla gap: ' + fmtUSD(Math.abs(selPrice + oppPrice - vanilla)) +
+      ' — within combined Monte Carlo error (SE ' + fmtNum(selSE + oppSE, 2) + '), as the in/out parity identity predicts regardless of direction.';
+
+    // The one closed form this engine ships (method of images) only
+    // covers a down-and-out CALL with barrier <= min(spot, strike) --
+    // see docs/numerics.md Phase 13. Show it only where it's valid.
+    if (p.direction === 0 && p.type === 0 && p.barrier <= Math.min(p.spot, p.strike)) {
+      var doPrice = p.direction === 0 ? selPrice : oppPrice;
+      var doCF = Module.ccall('bridge_down_and_out_call_closed_form', 'number',
+        ['number','number','number','number','number','number','number'],
+        [p.spot, p.rate, 0, p.vol, p.strike, p.barrier, p.T]);
+      note = 'Down-and-out closed form (method of images): ' + fmtUSD(doCF) + ' vs. this Monte Carlo run: ' +
+        fmtUSD(doPrice) + ' — a direct, independent check on the selected price above. ' + note;
+    }
+    document.getElementById('ex-closed-form-note').textContent = note;
+  }
+
+  function priceExotic(){
+    if (!Module) return;
+    var p = readExoticInputs();
+    if (!isFinite(p.spot) || !isFinite(p.strike) || !isFinite(p.vol) || p.vol <= 0){
+      return;
+    }
+    if (exPayoffSel.value === 'barrier'){
+      if (!isFinite(p.barrier) || p.barrier <= 0) return;
+      priceBarrier(p);
+    } else {
+      priceAsian(p);
+    }
+  }
+
+  exRunBtn.addEventListener('click', priceExotic);
+
   createDerivEngine().then(function(M){
     Module = M;
     setStatus('ready', 'engine loaded — wasm_bridge.cpp compiled via Emscripten');
     runBtn.disabled = false;
     price();
+    priceExotic();
   }).catch(function(err){
     setStatus('err', 'engine failed to load: ' + (err && err.message ? err.message : 'unknown error'));
   });

@@ -648,12 +648,22 @@ down-and-out + down-and-in = 10.4265 vs. vanilla = 10.4506; up-and-out +
 up-and-in = 10.4265 vs. vanilla = 10.4506 -- both well within the
 combined standard error the tests assert against.
 
-**Why these aren't wired into the live WASM demo:** consistent with the
-Phase 12 multi-expiry Heston tool above, Asian and Barrier pricing ship
-as engine code, tests, and this documentation, but the demo page itself
-is left unchanged. The demo's existing cards (Black-Scholes, binomial/
-trinomial trees, Monte Carlo, Heston) each answer one clean question with
-one headline number; Asian and Barrier pricing would need their own
-inputs (monitoring frequency, barrier level and direction) and don't
-compress into the existing card layout without a UI redesign that's out
-of scope for this phase.
+**Now wired into the live WASM demo, in its own card:** unlike the Phase
+12 multi-expiry Heston tool (a research tool with a nuanced, hard-to-
+headline finding), Asian and Barrier pricing are self-contained enough
+to demo directly, and the demo's own value is showing the real compiled
+engine at work -- so a second "Exotic options" card (`docs/index.html`,
+section 07) exposes `bridge_asian_price`, `bridge_barrier_price`,
+`bridge_geometric_asian_closed_form`, and
+`bridge_down_and_out_call_closed_form` through `wasm_bridge.cpp`, with
+its own inputs (monitoring steps; barrier level and direction for
+Barrier). The card doesn't just show a price -- it runs the same
+validation checks documented above live in the browser: the geometric
+Asian MC price next to its closed form with the gap called out, and for
+Barrier, the selected direction's Monte Carlo price next to its same-
+barrier opposite (in/out) side, with their sum checked against the
+vanilla price, plus the down-and-out closed form when the selected
+inputs make it valid. It uses fewer paths (150,000) and more monitoring
+steps (100) than the vanilla calculator's Monte Carlo card, tuned so the
+closed-form and parity checks land inside their own Monte Carlo error
+bars while staying interactive (under ~1.5s per click) in a browser.

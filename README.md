@@ -11,12 +11,15 @@ data — validated against a real exchange, not just textbook values.
 ## Live demo
 
 **[roberto0607.github.io/deriv-engine](https://roberto0607.github.io/deriv-engine/)**
-— the actual C++ (Black-Scholes, binomial tree, Monte Carlo, Heston)
-compiled to WebAssembly via Emscripten and run directly in the
-browser. Every number on that page comes out of the real compiled
-engine, not a JS reimplementation, and the Heston card's kappa/xi/rho
-are calibrated against the real Deribit chain by CI on every push
-(see `tools/calibrate_heston.cpp`), not hand-typed.
+— the actual C++ (Black-Scholes, binomial tree, Monte Carlo, Heston,
+plus a dedicated card for Asian and Barrier options) compiled to
+WebAssembly via Emscripten and run directly in the browser. Every
+number on that page comes out of the real compiled engine, not a JS
+reimplementation, and the Heston card's kappa/xi/rho are calibrated
+against the real Deribit chain by CI on every push (see
+`tools/calibrate_heston.cpp`), not hand-typed. The exotics card goes a
+step further and runs its own validation checks (closed form, in/out
+parity) live in the browser, not just a price.
 
 ## Headline result
 
@@ -85,8 +88,9 @@ evidence for this engine.
   Trinomial trees, second-order AAD (gamma), and exotic payoffs (Asian,
   Barrier) were deferred the same way at first, then revisited and built
   (see the rows above) once the higher-priority phases were done —
-  Asian/Barrier pricing ships as engine code and tests, deliberately not
-  wired into the live demo UI (see `docs/phase-log.md` Phase 13).
+  Asian/Barrier pricing has its own card in the live demo, running its
+  validation checks (closed form, in/out parity) live in the browser
+  (see `docs/phase-log.md` Phase 13).
 - **Gamma via AAD works on a smooth pricing formula, and honestly
   doesn't on Monte Carlo.** Forward-over-reverse AD recovers Black-
   Scholes gamma to ~1e-9 when applied to the closed-form formula. The
