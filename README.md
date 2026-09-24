@@ -58,6 +58,8 @@ engine's Heston model is calibrated to reproduce.
 | Crank-Nicolson PDE | Direct numerical solution of the Black-Scholes PDE | Converges to Black-Scholes; explicit-scheme instability demonstrated directly (diverges to -10^22 under the same conditions CN stays accurate) |
 | Implied vol + calibration | Real market data, not synthetic inputs | See headline result above |
 | Heston stochastic volatility | Closed-form pricing via the COS method (Fang & Oosterlee), capturing volatility skew a flat-vol model can't | Collapses to Black-Scholes in the deterministic-variance limit; independently cross-checked against a full Monte Carlo simulation of the Heston SDE; kappa/xi/rho calibrated (Nelder-Mead, regularized) against 66 real Deribit contracts, fitting the smile to 0.43pp RMSE in vol space |
+| Asian options (path-dependent MC) | Full-path GBM simulation, not terminal-jump sampling | Geometric-average variant matches its Kemna-Vorst closed form; arithmetic ≥ geometric (AM-GM, provable pathwise); Asian < vanilla European; single-monitoring-date edge case matches vanilla Monte Carlo exactly |
+| Barrier options (path-dependent MC) | All 4 knock-in/knock-out directions | Down-and-out call matches a method-of-images closed form; the other 3 directions validated via the model-independent in/out parity identity (knock-out + knock-in = vanilla) |
 
 Every method above independently arrives at the same price for the
 same European option — four structurally different approaches
@@ -78,12 +80,13 @@ evidence for this engine.
   AAD was measured to be *slower* than naive bump-and-revalue — the
   reasoning for why, and where the actual crossover point is, is
   documented in `docs/numerics.md` rather than glossed over.
-- **Deliberate scope decisions, not gaps.** Discrete dividends and
-  exotic payoffs (Asian, Barrier) are considered and explicitly
-  deferred, with the reasoning written down — see `docs/numerics.md`.
-  Trinomial trees and second-order AAD (gamma) were deferred the same
-  way at first, then revisited and built (see below and the tree row
-  above) once the higher-priority phases were done.
+- **Deliberate scope decisions, not gaps.** Discrete dividends remain
+  out of scope, with the reasoning written down in `docs/numerics.md`.
+  Trinomial trees, second-order AAD (gamma), and exotic payoffs (Asian,
+  Barrier) were deferred the same way at first, then revisited and built
+  (see the rows above) once the higher-priority phases were done —
+  Asian/Barrier pricing ships as engine code and tests, deliberately not
+  wired into the live demo UI (see `docs/phase-log.md` Phase 13).
 - **Gamma via AAD works on a smooth pricing formula, and honestly
   doesn't on Monte Carlo.** Forward-over-reverse AD recovers Black-
   Scholes gamma to ~1e-9 when applied to the closed-form formula. The

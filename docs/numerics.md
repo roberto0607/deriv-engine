@@ -554,3 +554,106 @@ an honest but weaker number, and that nuance doesn't compress well into a
 single demo stat without the surrounding explanation this section
 provides. It's kept as a standalone research tool and test, documented
 here rather than headlined.
+
+## Exotic options: Asian and Barrier (Phase 13)
+
+**Why these needed full path simulation, and the vanilla European pricer
+didn't:** the Monte Carlo section above explains that vanilla European
+options only need the terminal price `S_T`, so `monte_carlo_price()`
+deliberately jumps straight from today to expiry in one draw per path.
+Asian and Barrier payoffs depend on the *whole* path -- an Asian option's
+payoff is a function of the average price along the way, and a Barrier
+option's payoff depends on whether the path ever touches a level before
+expiry -- so `exotic_options.cpp` steps through `num_steps` intermediate
+dates per path instead, reusing the exact Euler-exact GBM stepping
+`longstaff_schwartz.cpp` already uses for American Monte Carlo
+(`S[step] = S[step-1] * exp((r-q-0.5*sigma^2)*dt + sigma*sqrt(dt)*Z)`).
+This is the same "deferred to that phase" path-stepping the Monte Carlo
+section above flags -- this is that phase, now for two more payoff types.
+
+**Validating a pricer with no closed form, by building one that has one:**
+There's no closed-form price for an arithmetic-average Asian option --
+the sum of lognormal random variables isn't itself lognormal, so the
+averaging breaks the algebra that makes Black-Scholes solvable. But the
+*geometric* average of those same lognormal prices, sampled at equally
+spaced dates, is itself exactly lognormal, which gives the geometric
+Asian option a closed form (Kemna & Vorst, 1990): price it like a vanilla
+Black-Scholes option, but with the drift and volatility replaced by
+
+```
+sigma_hat^2 = sigma^2 * (n+1)(2n+1) / (6n^2)
+mu_hat      = (r - q - 0.5*sigma^2)*(n+1)/(2n) + 0.5*sigma_hat^2
+```
+
+for `n` monitoring dates, discounted at the real rate `r`. This doesn't
+directly validate the arithmetic-average price anyone actually wants --
+but it validates the *path-simulation machinery* that both the arithmetic
+and geometric pricers share (`geometric_asian_price_mc()` reuses the same
+`simulate_paths()` helper, only the averaging formula differs): if the
+simulator reproduces a known closed form exactly, the same simulator's
+arithmetic-average output can be trusted too. Measured:
+`geometric_asian_price_closed_form` = 5.6411 vs. `geometric_asian_price_mc`
+(300,000 paths) = 5.6680 ± 0.0175 -- within 1.5 standard errors, well
+inside the 4-standard-error bound the test asserts.
+
+**Two more absolute-correctness checks, both provable without a Monte
+Carlo comparison at all:**
+- AM-GM inequality: pathwise, the arithmetic average of a set of positive
+  numbers is always ≥ their geometric average, and `max(x-K, 0)` is
+  nondecreasing in `x` -- so the arithmetic Asian call price is provably
+  ≥ the geometric Asian call price, in expectation as well as pathwise.
+  Tested directly (same seed, same paths under the hood, only the
+  averaging differs) rather than just asserted.
+- `num_steps=1` collapses an Asian option to a vanilla European option
+  exactly -- averaging one price is that price. Tested by comparing
+  `asian_option_price_mc` with one monitoring date directly against
+  `monte_carlo_price`, same seed, both stepping the same dynamics.
+
+**Barrier options: method of images, then in/out parity for the rest:**
+A down-and-out call, with the barrier `H` at or below both spot and
+strike, has a closed form via the reflection principle (method of
+images):
+
+```
+C_do(S,K,T) = C_BS(S,K,T) - (H/S)^(2*nu) * C_BS(H^2/S, K, T)
+nu = (r-q)/sigma^2 - 1/2
+```
+
+This single-reflection formula only holds under that `H <= min(S,K)`
+constraint -- above it, the vanilla payoff isn't zero at the barrier and
+one reflection no longer cancels it exactly, so the general
+Reiner-Rubinstein (1991) formula (16 cases across all direction/strike
+configurations) would be needed to cover barrier levels above the
+strike. That full formula was deliberately not implemented: it's easy to
+get subtly wrong in exactly the case-selection logic that's hardest to
+unit-test, and there was no independent reference implementation on hand
+to check it against here. `down_and_out_call_price_closed_form()` is
+scoped to the one case that's implementable with confidence.
+
+The other three directions (down-and-in, up-and-out, up-and-in) are
+validated without needing their own formulas at all, using a
+model-independent identity: every path either touches the barrier or it
+doesn't, so a knock-out and its same-direction knock-in partition every
+path exactly, and
+
+```
+(same-direction knock-out price) + (same-direction knock-in price) == vanilla price
+```
+
+holds regardless of the underlying's dynamics -- it's a statement about
+set partitioning, not about GBM specifically. Measured (200,000 paths,
+same seed for the out/in pair so they share the same simulated paths and
+only differ in which side of the partition each path falls on):
+down-and-out + down-and-in = 10.4265 vs. vanilla = 10.4506; up-and-out +
+up-and-in = 10.4265 vs. vanilla = 10.4506 -- both well within the
+combined standard error the tests assert against.
+
+**Why these aren't wired into the live WASM demo:** consistent with the
+Phase 12 multi-expiry Heston tool above, Asian and Barrier pricing ship
+as engine code, tests, and this documentation, but the demo page itself
+is left unchanged. The demo's existing cards (Black-Scholes, binomial/
+trinomial trees, Monte Carlo, Heston) each answer one clean question with
+one headline number; Asian and Barrier pricing would need their own
+inputs (monitoring frequency, barrier level and direction) and don't
+compress into the existing card layout without a UI redesign that's out
+of scope for this phase.

@@ -19,6 +19,7 @@
 #include "deriv-engine/heston.hpp"
 #include "deriv-engine/heston_mc.hpp"
 #include "deriv-engine/heston_calibration.hpp"
+#include "deriv-engine/exotic_options.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -1473,4 +1474,123 @@ TEST_CASE("Multi-expiry Heston calibration resolves the single-expiry kappa/thet
     REQUIRE(multi.params.theta == Catch::Approx(truth.theta).epsilon(0.10));
     REQUIRE(multi.params.v0 == Catch::Approx(truth.v0).epsilon(0.05));
     REQUIRE(multi.params.rho == Catch::Approx(truth.rho).epsilon(0.05));
+}
+TEST_CASE("Geometric Asian option: Monte Carlo path simulation matches the Kemna-Vorst closed form",
+          "[exotic][asian][monte_carlo]") {
+    // Arithmetic Asian options have no closed form, so this test validates
+    // the path-simulation machinery itself (shared by the arithmetic
+    // pricer) against a case that DOES have one: the geometric average.
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::AsianOption option{100.0, 1.0, deriv::OptionType::Call};
+    int num_steps = 50;
+
+    double closed_form = deriv::geometric_asian_price_closed_form(option, market, num_steps);
+    deriv::AsianResult mc = deriv::geometric_asian_price_mc(option, market, 300000, num_steps, 42);
+
+    INFO("closed-form: " << closed_form << "  MC: " << mc.price << " +- " << mc.standard_error);
+    REQUIRE(mc.price == Catch::Approx(closed_form).margin(4.0 * mc.standard_error));
+}
+
+TEST_CASE("Arithmetic Asian call price is at least the geometric Asian call price (AM-GM)",
+          "[exotic][asian][monte_carlo]") {
+    // Pathwise, arithmetic average >= geometric average (AM-GM inequality),
+    // and max(x-K,0) is nondecreasing in x, so this holds path-by-path and
+    // therefore in expectation -- a model-independent inequality, not just
+    // a numerical coincidence for this particular market.
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.3};
+    deriv::AsianOption option{100.0, 1.0, deriv::OptionType::Call};
+    int num_steps = 50;
+    unsigned int seed = 123;
+
+    deriv::AsianResult arithmetic = deriv::asian_option_price_mc(option, market, 200000, num_steps, seed);
+    deriv::AsianResult geometric = deriv::geometric_asian_price_mc(option, market, 200000, num_steps, seed);
+
+    INFO("arithmetic: " << arithmetic.price << "  geometric: " << geometric.price);
+    REQUIRE(arithmetic.price > geometric.price);
+}
+
+TEST_CASE("Asian call price is below the vanilla European call price", "[exotic][asian][monte_carlo]") {
+    // Averaging the underlying's path dampens its effective volatility
+    // (the average of many draws has lower variance than a single terminal
+    // draw), so an Asian call is systematically cheaper than the vanilla
+    // European call with the same strike/expiry.
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.3};
+    deriv::AsianOption asian{100.0, 1.0, deriv::OptionType::Call};
+    deriv::EuropeanOption vanilla{100.0, 1.0, deriv::OptionType::Call};
+
+    deriv::AsianResult asian_result = deriv::asian_option_price_mc(asian, market, 200000, 50, 7);
+    double vanilla_price = deriv::black_scholes_price(vanilla, market);
+
+    INFO("Asian: " << asian_result.price << "  vanilla: " << vanilla_price);
+    REQUIRE(asian_result.price < vanilla_price);
+}
+
+TEST_CASE("Asian option with a single monitoring date matches vanilla European Monte Carlo",
+          "[exotic][asian][monte_carlo]") {
+    // With num_steps=1, the "average" is sampled at exactly one date (T),
+    // so avg(S) == S_T and the Asian payoff collapses to the vanilla
+    // European payoff exactly. Both pricers step the same GBM dynamics
+    // with the same seed, so they should agree closely.
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::AsianOption asian{100.0, 1.0, deriv::OptionType::Call};
+    deriv::EuropeanOption vanilla{100.0, 1.0, deriv::OptionType::Call};
+    unsigned int seed = 99;
+
+    deriv::AsianResult asian_result = deriv::asian_option_price_mc(asian, market, 200000, 1, seed);
+    deriv::MonteCarloResult vanilla_result =
+        deriv::monte_carlo_price(vanilla, market, 200000, /*antithetic=*/false, seed);
+
+    INFO("Asian(1 step): " << asian_result.price << "  vanilla MC: " << vanilla_result.price);
+    REQUIRE(asian_result.price ==
+            Catch::Approx(vanilla_result.price).margin(4.0 * (asian_result.standard_error + vanilla_result.standard_error)));
+}
+
+TEST_CASE("Down-and-out barrier call: Monte Carlo matches the method-of-images closed form",
+          "[exotic][barrier][monte_carlo]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::BarrierOption option{100.0, 80.0, 1.0, deriv::OptionType::Call, deriv::BarrierDirection::DownAndOut};
+
+    double closed_form = deriv::down_and_out_call_price_closed_form(option, market);
+    deriv::BarrierResult mc = deriv::barrier_option_price_mc(option, market, 300000, 100, 42);
+
+    INFO("closed-form: " << closed_form << "  MC: " << mc.price << " +- " << mc.standard_error);
+    REQUIRE(mc.price == Catch::Approx(closed_form).margin(4.0 * mc.standard_error));
+}
+
+TEST_CASE("In/out barrier parity: down-and-out + down-and-in == vanilla", "[exotic][barrier][monte_carlo]") {
+    // Model-independent identity: a path either touches the barrier or it
+    // doesn't, so a knock-out and its same-direction knock-in partition
+    // every path exactly, and together they always reproduce the vanilla
+    // payoff -- true regardless of the underlying's dynamics.
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption vanilla{100.0, 1.0, deriv::OptionType::Call};
+    deriv::BarrierOption out_opt{100.0, 80.0, 1.0, deriv::OptionType::Call, deriv::BarrierDirection::DownAndOut};
+    deriv::BarrierOption in_opt{100.0, 80.0, 1.0, deriv::OptionType::Call, deriv::BarrierDirection::DownAndIn};
+    unsigned int seed = 55;
+
+    deriv::BarrierResult out_result = deriv::barrier_option_price_mc(out_opt, market, 200000, 100, seed);
+    deriv::BarrierResult in_result = deriv::barrier_option_price_mc(in_opt, market, 200000, 100, seed);
+    double vanilla_price = deriv::black_scholes_price(vanilla, market);
+
+    double combined_se = out_result.standard_error + in_result.standard_error;
+    INFO("out: " << out_result.price << "  in: " << in_result.price
+                  << "  sum: " << out_result.price + in_result.price << "  vanilla: " << vanilla_price);
+    REQUIRE(out_result.price + in_result.price == Catch::Approx(vanilla_price).margin(4.0 * combined_se));
+}
+
+TEST_CASE("In/out barrier parity: up-and-out + up-and-in == vanilla", "[exotic][barrier][monte_carlo]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.2};
+    deriv::EuropeanOption vanilla{100.0, 1.0, deriv::OptionType::Call};
+    deriv::BarrierOption out_opt{100.0, 120.0, 1.0, deriv::OptionType::Call, deriv::BarrierDirection::UpAndOut};
+    deriv::BarrierOption in_opt{100.0, 120.0, 1.0, deriv::OptionType::Call, deriv::BarrierDirection::UpAndIn};
+    unsigned int seed = 55;
+
+    deriv::BarrierResult out_result = deriv::barrier_option_price_mc(out_opt, market, 200000, 100, seed);
+    deriv::BarrierResult in_result = deriv::barrier_option_price_mc(in_opt, market, 200000, 100, seed);
+    double vanilla_price = deriv::black_scholes_price(vanilla, market);
+
+    double combined_se = out_result.standard_error + in_result.standard_error;
+    INFO("out: " << out_result.price << "  in: " << in_result.price
+                  << "  sum: " << out_result.price + in_result.price << "  vanilla: " << vanilla_price);
+    REQUIRE(out_result.price + in_result.price == Catch::Approx(vanilla_price).margin(4.0 * combined_se));
 }

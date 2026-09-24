@@ -921,3 +921,94 @@ it cannot represent, not a defect in the fitting code. Can name the real
 fix (piecewise-constant parameters or a multi-factor model) and explain
 why it's out of scope: it's a genuinely different model, not a tuning
 change to this one.
+## Phase 13 — Exotic options: Asian and Barrier (done)
+
+**What was built:**
+- `AsianOption` and `BarrierOption` instruments (`instrument.hpp`), plus
+  a `BarrierDirection` enum covering all four combinations (down/up,
+  in/out)
+- `exotic_options.hpp`/`exotic_options.cpp`: a full-path-simulation Monte
+  Carlo pricer for arithmetic-average Asian options
+  (`asian_option_price_mc`), a geometric-average sibling using the same
+  simulator (`geometric_asian_price_mc`) built purely to validate against
+  a closed form, a Kemna-Vorst closed-form geometric Asian pricer
+  (`geometric_asian_price_closed_form`), a Monte Carlo barrier pricer
+  covering all four directions (`barrier_option_price_mc`), and a
+  method-of-images closed-form down-and-out call pricer
+  (`down_and_out_call_price_closed_form`)
+- Both Monte Carlo pricers reuse the Euler-exact GBM path-stepping
+  pattern already established in `longstaff_schwartz.cpp`, rather than
+  reinventing it — genuinely needed here (unlike vanilla European Monte
+  Carlo, whose terminal-jump sampling is the deliberate, documented
+  choice `docs/numerics.md` explains) because both payoffs depend on the
+  whole path, not just `S_T`
+- Seven new tests (`tests/test_main.cpp`, `[exotic]` tag)
+
+**Validated against:**
+- Geometric Asian: Monte Carlo (300,000 paths) vs. the Kemna-Vorst closed
+  form — 5.6680 ± 0.0175 vs. 5.6411, within 1.5 standard errors
+- AM-GM inequality: arithmetic Asian call price (5.8843) measured
+  strictly above the geometric Asian call price on the same simulated
+  paths — provable pathwise, not just observed
+- Asian call price (5.8843) measured strictly below the vanilla European
+  call price (10.4506) on the same market, consistent with averaging
+  reducing effective volatility
+- `num_steps=1` Asian option vs. vanilla European Monte Carlo, same seed,
+  same dynamics — collapse to the same price within combined standard
+  error, the provable single-monitoring-date edge case
+- Down-and-out barrier call: Monte Carlo (300,000 paths) vs. the
+  method-of-images closed form — 10.3526 ± 0.0329 vs. 10.3513
+- In/out parity, both directions: down-and-out + down-and-in = 10.4265
+  vs. vanilla = 10.4506; up-and-out + up-and-in = 10.4265 vs. vanilla =
+  10.4506 — both within combined standard error, validating three of the
+  four barrier directions without needing closed forms for any of them
+
+**Why the general Reiner-Rubinstein barrier formula wasn't implemented:**
+the full closed-form barrier pricing formula (Reiner & Rubinstein, 1991)
+covers all 16 direction/strike-vs-barrier configurations, but the
+case-selection logic across those 16 cases is exactly the kind of thing
+that's easy to get subtly wrong and hard to catch by testing — and there
+was no independent reference implementation on hand here to check it
+against. Scoped down instead to the one case implementable with real
+confidence (down-and-out, `H <= min(S,K)`, where a single reflection is
+exact), and used the model-independent in/out parity identity — which
+needs no formula derivation at all, just the fact that a knock-out and
+its knock-in partition every path — to validate the other three
+directions instead. A smaller, fully-trustworthy validation surface over
+a larger, riskier one.
+
+**Why these aren't wired into the live WASM demo:** consistent with the
+Phase 12 multi-expiry Heston tool, this phase adds engine code, tests,
+and documentation, but leaves the demo page itself unchanged. The demo's
+existing cards each answer one question with one headline number; Asian
+and Barrier pricing need their own inputs (monitoring frequency, barrier
+level and direction) that don't fit the existing layout without a UI
+redesign — a deliberate scope decision, not an oversight, and one that
+also keeps the live-demo UI itself untouched and low-risk, per the
+project's earlier decision to verify the UI carefully before touching it
+further.
+
+**Defend this:**
+Can explain why vanilla European Monte Carlo samples only the terminal
+price while Asian and Barrier pricing need the full path: the payoff
+itself is path-dependent (an average, or a touch condition), not just a
+function of `S_T`, so there's no shortcut past simulating the
+intermediate steps. Can explain why the geometric Asian option has a
+closed form and the arithmetic one doesn't: a sum of lognormal random
+variables isn't itself lognormal (arithmetic average), but a product of
+lognormals is (geometric average, via the log-sum), which is the same
+algebraic fact that makes Black-Scholes solvable in the first place. Can
+explain the method-of-images formula's `H <= min(S,K)` constraint
+precisely: the reflection only cancels the payoff exactly at the barrier
+when the payoff is already zero there, which is guaranteed for a call
+struck at or above a barrier below spot, and breaks down otherwise. Can
+explain why in/out parity works without any model assumptions: it's true
+by simple case exhaustion (every path either touches the barrier or
+doesn't), not a Black-Scholes-specific or even GBM-specific result — it
+would hold under any stochastic process. Can name the honest limitation:
+no general (all-16-case) barrier formula, and no continuous-monitoring
+correction (this prices discretely-monitored barriers at `num_steps`
+dates, which is what's actually simulated — a continuously-monitored
+barrier is a different, slightly more barrier-sensitive instrument, and
+pricing it exactly needs a discrete-to-continuous correction this
+implementation doesn't apply).
