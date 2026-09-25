@@ -999,7 +999,20 @@
       if (!res.ok) throw new Error('btc_price_history.csv not found (HTTP ' + res.status + ')');
       return res.text();
     }).then(function(csvText){
-      var rows = Module.ccall('bridge_load_price_history', 'number', ['string'], [csvText]);
+      // NOT Module.ccall(..., ['string'], [csvText]) -- ccall's automatic
+      // string marshalling allocates the C string on Emscripten's stack
+      // (stackAlloc), which defaults to a 64KB budget. This CSV is
+      // ~120KB of text, so that path overflows the stack and corrupts
+      // memory (surfaced as "Out of bounds memory access" in some
+      // browsers, silently in others) -- a real bug caught after
+      // shipping, not a hypothetical. Allocating the string on the
+      // HEAP instead (malloc/stringToUTF8/free), sized to the actual
+      // text, has no such limit.
+      var len = Module.lengthBytesUTF8(csvText) + 1;
+      var ptr = Module._malloc(len);
+      Module.stringToUTF8(csvText, ptr, len);
+      var rows = Module.ccall('bridge_load_price_history', 'number', ['number'], [ptr]);
+      Module._free(ptr);
       if (rows <= 0) throw new Error('failed to parse btc_price_history.csv');
       historyLoaded = true;
       historyStatusEl.className = 'calc-status ready';

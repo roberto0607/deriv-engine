@@ -35,7 +35,7 @@ jobs:
             wasm/wasm_bridge.cpp \
             -s MODULARIZE=1 -s EXPORT_NAME=createDerivEngine -s ENVIRONMENT=web \
             -s EXPORTED_FUNCTIONS='["_bridge_bs_price","_bridge_bs_greeks","_bridge_tree_price_european","_bridge_tree_price_american","_bridge_trinomial_price_european","_bridge_trinomial_price_american","_bridge_mc_price","_bridge_implied_vol","_bridge_heston_price","_bridge_asian_price","_bridge_geometric_asian_closed_form","_bridge_barrier_price","_bridge_down_and_out_call_closed_form","_bridge_bates_price","_bridge_load_price_history","_bridge_history_size","_bridge_run_backtest","_bridge_backtest_window_count","_bridge_backtest_window_pnl_bps","_bridge_run_var","_bridge_run_stress_test","_malloc","_free"]' \
-            -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue"]' \
+            -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue","stringToUTF8","lengthBytesUTF8"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s SINGLE_FILE=1 \
             -o docs/deriv_engine.js
 
