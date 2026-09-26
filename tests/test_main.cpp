@@ -26,6 +26,8 @@
 #include "deriv-engine/backtest.hpp"
 #include "deriv-engine/portfolio.hpp"
 #include "deriv-engine/var.hpp"
+#include "deriv-engine/pnl_attribution.hpp"
+#include "deriv-engine/cva.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -2254,4 +2256,255 @@ TEST_CASE("Historical VaR and Monte Carlo VaR broadly agree, and both clear the 
     // (which see the book's real gamma) correctly price in.
     REQUIRE(dnvar_99 < hvar.var_99);
     REQUIRE(dnvar_99 < mcvar.var_99);
+}
+
+// --- P&L attribution (Phase 18) ---------------------------------------
+
+TEST_CASE("portfolio_gamma/vega/theta match analytical Black-Scholes Greeks on a single long call",
+          "[portfolio][pnl_attribution]") {
+    deriv::MarketData market{100.0, 0.05, 0.0, 0.25};
+    deriv::EuropeanOption call{100.0, 0.5, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 1.0, "long 1 call"});
+
+    deriv::Greeks analytical = deriv::black_scholes_greeks(call, market);
+
+    double gamma = deriv::portfolio_gamma(book, market, test_bs_pricer());
+    double vega = deriv::portfolio_vega(book, market, test_bs_pricer());
+    double theta = deriv::portfolio_theta(book, market, test_bs_pricer());
+
+    // vega here is reported per 1.0 vol POINT (matching black_scholes_greeks'
+    // own convention -- see greeks.hpp), so these should agree directly,
+    // not need any 1/100 rescaling.
+    REQUIRE(gamma == Catch::Approx(analytical.gamma).epsilon(1e-3));
+    REQUIRE(vega == Catch::Approx(analytical.vega).epsilon(1e-3));
+    // portfolio_theta is a ONE-DAY finite difference (not the instantaneous
+    // analytical derivative), so it only has to be in the right ballpark,
+    // not machine-precision -- a call's value curve is convex in time
+    // near expiry, so a finite step and the instantaneous slope diverge
+    // somewhat; 10% agreement confirms the sign and rough magnitude are
+    // right, which is what a finite-difference "one day of decay" number
+    // should be checked against.
+    REQUIRE(theta == Catch::Approx(analytical.theta).epsilon(0.10));
+}
+
+TEST_CASE("attribute_pnl's delta/gamma/vega/theta/unexplained components sum exactly to total_pnl",
+          "[portfolio][pnl_attribution]") {
+    // An accounting identity that must hold by construction -- guards
+    // against a refactor accidentally breaking it, the same role the
+    // in/out barrier parity test and the Bates-collapses-to-Heston test
+    // play elsewhere in this file.
+    double spot = 77000.0;
+    deriv::MarketData before{spot, 0.0, 0.0, 0.7};
+    deriv::MarketData after{spot * 1.08, 0.0, 0.0, 0.65};
+    deriv::Portfolio book = deriv::make_example_market_maker_book(spot);
+
+    auto result = deriv::attribute_pnl(book, before, after, test_bs_pricer(), 5.0);
+
+    double explained_plus_residual =
+        result.delta_pnl + result.gamma_pnl + result.vega_pnl + result.theta_pnl + result.unexplained_pnl;
+
+    REQUIRE(explained_plus_residual == Catch::Approx(result.total_pnl).margin(1e-6));
+}
+
+TEST_CASE("attribute_pnl leaves almost no unexplained P&L for a small, isolated spot move",
+          "[portfolio][pnl_attribution]") {
+    // Delta + gamma is a second-order Taylor approximation, so for a
+    // SMALL move with nothing else changing, it should explain nearly
+    // all of the real repriced P&L -- the classic check that a P&L
+    // explain process is actually working before trusting it on bigger,
+    // messier moves.
+    double spot = 77000.0;
+    deriv::MarketData before{spot, 0.0, 0.0, 0.7};
+    deriv::MarketData after{spot * 1.002, 0.0, 0.0, 0.7};  // 0.2% spot move, nothing else changes
+    deriv::Portfolio book = deriv::make_example_market_maker_book(spot);
+
+    auto result = deriv::attribute_pnl(book, before, after, test_bs_pricer(), 0.0);
+
+    INFO("total=" << result.total_pnl << " unexplained=" << result.unexplained_pnl);
+    REQUIRE(std::abs(result.unexplained_pnl) < 0.02 * std::abs(result.total_pnl));
+}
+
+TEST_CASE("attribute_pnl's total_pnl exactly equals theta_pnl for pure time decay (dS=0, dVol=0, 1 day)",
+          "[portfolio][pnl_attribution]") {
+    // portfolio_theta() is itself defined as a ONE-DAY finite difference
+    // (see pnl_attribution.hpp/cpp), so when attribute_pnl is called with
+    // time_elapsed_days=1 and an otherwise-unchanged market, its
+    // decay-and-reprice step is IDENTICAL to the one portfolio_theta()
+    // already performed internally -- total_pnl should equal theta_pnl
+    // exactly (floating-point identical, not just approximately), and
+    // delta_pnl/gamma_pnl/vega_pnl/unexplained_pnl should all be ~0.
+    double spot = 60000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.6};
+    deriv::EuropeanOption call{spot, 0.25, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 2.0, "long 2 ATM calls"});
+
+    auto result = deriv::attribute_pnl(book, market, market, test_bs_pricer(), 1.0);
+
+    REQUIRE(result.delta_pnl == Catch::Approx(0.0).margin(1e-9));
+    REQUIRE(result.gamma_pnl == Catch::Approx(0.0).margin(1e-9));
+    REQUIRE(result.vega_pnl == Catch::Approx(0.0).margin(1e-9));
+    REQUIRE(result.total_pnl == Catch::Approx(result.theta_pnl).margin(1e-6));
+    REQUIRE(result.unexplained_pnl == Catch::Approx(0.0).margin(1e-6));
+
+    // A long call held with nothing else moving should lose value to
+    // time decay -- the same sign every desk expects from a long-option
+    // position's theta.
+    REQUIRE(result.total_pnl < 0.0);
+}
+
+TEST_CASE("attribute_pnl's gamma_pnl is positive for a long-gamma book after ANY spot move, "
+          "up or down",
+          "[portfolio][pnl_attribution]") {
+    // Positive gamma means convexity works in your favor regardless of
+    // direction -- the whole reason "long gamma" is a desirable position.
+    double spot = 50000.0;
+    deriv::MarketData before{spot, 0.0, 0.0, 0.6};
+    deriv::EuropeanOption call{spot, 0.25, deriv::OptionType::Call};
+    deriv::EuropeanOption put{spot, 0.25, deriv::OptionType::Put};
+
+    deriv::Portfolio long_straddle;
+    long_straddle.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 1.0, "long 1 call"});
+    long_straddle.positions.push_back(deriv::Position{deriv::Position::Kind::Option, put, 1.0, "long 1 put"});
+
+    deriv::MarketData up = before;
+    up.spot = spot * 1.05;
+    deriv::MarketData down = before;
+    down.spot = spot * 0.95;
+
+    auto result_up = deriv::attribute_pnl(long_straddle, before, up, test_bs_pricer(), 0.0);
+    auto result_down = deriv::attribute_pnl(long_straddle, before, down, test_bs_pricer(), 0.0);
+
+    REQUIRE(result_up.gamma_pnl > 0.0);
+    REQUIRE(result_down.gamma_pnl > 0.0);
+}
+
+// --- Basic CVA (Phase 18) ----------------------------------------------
+
+namespace {
+
+deriv::BatesParams test_cva_params() {
+    // Same calibrated structural parameters used throughout the real-data
+    // VaR/backtest tests (tools/calibrate_heston.cpp's fit, plus the
+    // Phase 15 jump-threshold heuristic's jump parameters) -- not
+    // hand-picked for this test file.
+    deriv::HestonParams heston{0.75 * 0.75, 1.829505, 0.134505, 1.280247, -0.194560};
+    return deriv::BatesParams{heston, 3.4626461121463663, -0.000773771446447099, 0.27331845903521157};
+}
+
+}  // namespace
+
+TEST_CASE("compute_cva is zero when recovery_rate is 1.0 (no loss given default)", "[portfolio][cva]") {
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.75};
+    deriv::EuropeanOption call{spot, 0.5, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 1.0, "long 1 call"});
+
+    auto result = deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(),
+                                      /*hazard_rate=*/0.05, /*recovery_rate=*/1.0,
+                                      /*horizon_years=*/0.5, /*num_time_steps=*/6, /*num_paths=*/2000, 42);
+
+    REQUIRE(result.cva == Catch::Approx(0.0).margin(1e-9));
+}
+
+TEST_CASE("compute_cva is zero when hazard_rate is 0 (counterparty never defaults)", "[portfolio][cva]") {
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.75};
+    deriv::EuropeanOption call{spot, 0.5, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 1.0, "long 1 call"});
+
+    auto result = deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(),
+                                      /*hazard_rate=*/0.0, /*recovery_rate=*/0.4,
+                                      /*horizon_years=*/0.5, /*num_time_steps=*/6, /*num_paths=*/2000, 42);
+
+    REQUIRE(result.cva == Catch::Approx(0.0).margin(1e-9));
+}
+
+TEST_CASE("compute_cva is zero for a portfolio with only negative exposure (short options, no long "
+          "positions)",
+          "[portfolio][cva]") {
+    // A short call is a liability, never an asset: its value is always
+    // <= 0, so YOU never have positive exposure to this counterparty --
+    // their default costs you nothing, and CVA should be exactly 0. This
+    // is the same "exposure, not raw P&L" distinction VaR does NOT make
+    // (VaR cares about the sign of a loss; CVA specifically cares about
+    // who owes whom) -- see cva.hpp's header comment.
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.75};
+    deriv::EuropeanOption call{spot, 0.5, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, -1.0, "short 1 call"});
+
+    auto result = deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(),
+                                      /*hazard_rate=*/0.05, /*recovery_rate=*/0.4,
+                                      /*horizon_years=*/0.5, /*num_time_steps=*/6, /*num_paths=*/2000, 42);
+
+    REQUIRE(result.cva == Catch::Approx(0.0).margin(1e-9));
+    REQUIRE(result.expected_exposure_peak == Catch::Approx(0.0).margin(1e-9));
+}
+
+TEST_CASE("compute_cva is strictly positive for a long option position with real hazard/recovery",
+          "[portfolio][cva]") {
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.75};
+    deriv::EuropeanOption call{spot, 0.5, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 1.0, "long 1 call"});
+
+    auto result = deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(),
+                                      /*hazard_rate=*/0.05, /*recovery_rate=*/0.4,
+                                      /*horizon_years=*/0.5, /*num_time_steps=*/6, /*num_paths=*/2000, 42);
+
+    REQUIRE(result.cva > 0.0);
+    REQUIRE(result.expected_exposure_peak > 0.0);
+    // CVA is a cost that shaves value off the position -- it should
+    // never exceed the position's own current mark-to-market value for
+    // a single long option this far from default certainty.
+    double current_value = deriv::portfolio_value(book, market, test_bs_pricer());
+    REQUIRE(result.cva < current_value);
+}
+
+TEST_CASE("compute_cva increases monotonically with hazard_rate, holding everything else fixed",
+          "[portfolio][cva]") {
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.75};
+    deriv::EuropeanOption call{spot, 0.5, deriv::OptionType::Call};
+
+    deriv::Portfolio book;
+    book.positions.push_back(deriv::Position{deriv::Position::Kind::Option, call, 1.0, "long 1 call"});
+
+    auto low = deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(), 0.01, 0.4, 0.5, 6, 3000, 7);
+    auto high = deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(), 0.15, 0.4, 0.5, 6, 3000, 7);
+
+    INFO("low hazard cva=" << low.cva << " high hazard cva=" << high.cva);
+    REQUIRE(high.cva > low.cva);
+}
+
+TEST_CASE("hazard_rate_from_cds_spread matches the standard credit-triangle formula",
+          "[portfolio][cva]") {
+    double hazard = deriv::hazard_rate_from_cds_spread(0.02, 0.4);
+    REQUIRE(hazard == Catch::Approx(0.02 / 0.6).epsilon(1e-9));
+}
+
+TEST_CASE("compute_cva throws on non-positive num_time_steps, num_paths, or horizon_years",
+          "[portfolio][cva][edge_case]") {
+    double spot = 77000.0;
+    deriv::MarketData market{spot, 0.0, 0.0, 0.75};
+    deriv::Portfolio book = deriv::make_example_market_maker_book(spot);
+
+    REQUIRE_THROWS_AS(deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(), 0.05, 0.4, 0.5, 0, 100),
+                      std::runtime_error);
+    REQUIRE_THROWS_AS(deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(), 0.05, 0.4, 0.5, 6, 0),
+                      std::runtime_error);
+    REQUIRE_THROWS_AS(deriv::compute_cva(book, market, test_cva_params(), test_bs_pricer(), 0.05, 0.4, 0.0, 6, 100),
+                      std::runtime_error);
 }
