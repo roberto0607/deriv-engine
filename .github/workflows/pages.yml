@@ -31,10 +31,10 @@ jobs:
           cp data/btc_price_history.csv docs/btc_price_history.csv
           em++ -std=c++20 -O2 -fexceptions \
             -I include \
-            src/black_scholes.cpp src/greeks.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/implied_vol.cpp src/day_count.cpp src/heston.cpp src/tape2.cpp src/exotic_options.cpp src/bates.cpp src/price_history.cpp src/backtest.cpp src/portfolio.cpp src/var.cpp \
+            src/black_scholes.cpp src/greeks.cpp src/tree_pricer.cpp src/monte_carlo.cpp src/implied_vol.cpp src/day_count.cpp src/heston.cpp src/tape2.cpp src/exotic_options.cpp src/bates.cpp src/price_history.cpp src/backtest.cpp src/portfolio.cpp src/var.cpp src/pnl_attribution.cpp src/cva.cpp \
             wasm/wasm_bridge.cpp \
             -s MODULARIZE=1 -s EXPORT_NAME=createDerivEngine -s ENVIRONMENT=web \
-            -s EXPORTED_FUNCTIONS='["_bridge_bs_price","_bridge_bs_greeks","_bridge_tree_price_european","_bridge_tree_price_american","_bridge_trinomial_price_european","_bridge_trinomial_price_american","_bridge_mc_price","_bridge_implied_vol","_bridge_heston_price","_bridge_asian_price","_bridge_geometric_asian_closed_form","_bridge_barrier_price","_bridge_down_and_out_call_closed_form","_bridge_bates_price","_bridge_load_price_history","_bridge_history_size","_bridge_run_backtest","_bridge_backtest_window_count","_bridge_backtest_window_pnl_bps","_bridge_run_var","_bridge_run_stress_test","_malloc","_free"]' \
+            -s EXPORTED_FUNCTIONS='["_bridge_bs_price","_bridge_bs_greeks","_bridge_tree_price_european","_bridge_tree_price_american","_bridge_trinomial_price_european","_bridge_trinomial_price_american","_bridge_mc_price","_bridge_implied_vol","_bridge_heston_price","_bridge_asian_price","_bridge_geometric_asian_closed_form","_bridge_barrier_price","_bridge_down_and_out_call_closed_form","_bridge_bates_price","_bridge_load_price_history","_bridge_history_size","_bridge_run_backtest","_bridge_backtest_window_count","_bridge_backtest_window_pnl_bps","_bridge_run_var","_bridge_run_stress_test","_bridge_run_pnl_attribution","_bridge_run_cva","_bridge_hazard_rate_from_cds_spread","_malloc","_free"]' \
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","getValue","setValue","stringToUTF8","lengthBytesUTF8"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s SINGLE_FILE=1 \
             -o docs/deriv_engine.js

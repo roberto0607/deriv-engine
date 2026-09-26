@@ -13,21 +13,26 @@ data — validated against a real exchange, not just textbook values.
 **[roberto0607.github.io/deriv-engine](https://roberto0607.github.io/deriv-engine/)**
 — the actual C++ (Black-Scholes, binomial tree, Monte Carlo, Heston,
 Bates, plus dedicated cards for Asian/Barrier options, the Phase 15
-historical backtest, and Phase 16 portfolio VaR/stress testing)
-compiled to WebAssembly via Emscripten and run directly in the
-browser. Every number on that page comes out of the real compiled
-engine, not a JS reimplementation, and the Heston/Bates cards'
-kappa/theta/xi/rho are calibrated against the real Deribit chain by
-CI on every push (see `tools/calibrate_heston.cpp`), not hand-typed.
-The exotics card goes a step further and runs its own validation
-checks (closed form, in/out parity) live in the browser, not just a
-price. The backtest and VaR cards go further still: they fetch the
-real 16-year committed price history
+historical backtest, Phase 16 portfolio VaR/stress testing, and Phase
+18 P&L attribution/CVA) compiled to WebAssembly via Emscripten and run
+directly in the browser. Every number on that page comes out of the
+real compiled engine, not a JS reimplementation, and the Heston/Bates
+cards' kappa/theta/xi/rho are calibrated against the real Deribit
+chain by CI on every push (see `tools/calibrate_heston.cpp`), not
+hand-typed. The exotics card goes a step further and runs its own
+validation checks (closed form, in/out parity) live in the browser,
+not just a price. The backtest and VaR cards go further still: they
+fetch the real 16-year committed price history
 (`docs/btc_price_history.csv`) over HTTP, parse it with this
 project's actual C++ CSV parser compiled to WASM (not JavaScript),
 and run the real rolling-window backtest and historical/Monte Carlo
 VaR live in your browser — reproducing the exact numbers in the
-table below, not a canned screenshot.
+table below, not a canned screenshot. The P&L attribution and CVA
+cards close out the risk side of the engine: one decomposes a realized
+move on the example book into the Greeks that actually drove it, the
+other prices in a counterparty's default risk on a real position —
+even the CDS-spread-to-hazard-rate conversion runs through the
+compiled engine rather than a JS one-liner.
 
 ## Headline result
 
@@ -74,6 +79,8 @@ engine's Heston model is calibrated to reproduce.
 | Bates model (Heston + Merton jumps) | Adds discontinuous jumps on top of Heston's diffusion — a jump-diffusion closed-form via the COS method, reusing Heston's own characteristic function rather than re-deriving it | Collapses exactly to Heston when jump intensity is zero; collapses to closed-form Merton (1976) jump-diffusion in the deterministic-variance limit; independently cross-checked against a full Monte Carlo simulation of the actual Bates SDE + jump process |
 | Historical delta-hedging backtest | Do Black-Scholes/Heston/Bates hedge ratios track *real* BTC price history, day by day — not just synthetic Monte Carlo paths | Rolling 30-day at-the-money calls, delta-hedged daily against 16 years of real BTC price history (2010-2026, 195 windows): Bates (jump-aware) shows both the highest mean hedge P&L (+225.8bps) and the lowest variance (430.7bps) of the three models, consistent whether measured over the full history or restricted to 2016+ (Deribit's own era) |
 | Portfolio-level VaR and stress testing | Cross-validates two genuinely independent risk methods against each other, and exposes the classic blind spot of the naive one | On a short-gamma example book: real historical simulation and Monte Carlo (Bates SDE) VaR agree within ~2.3x at the 99% level (9.9k vs. 6.8k at 95%, 37.8k vs. 16.3k at 99%); delta-normal VaR — the fast textbook approximation — misses badly at 99% (3.95k, roughly a tenth of what the two repricing-based methods find) because it can't see the book's gamma. Stress-tested against 3 real historical crashes (COVID, FTX collapse, the full 2021-2022 bear market) |
+| P&L attribution | Taylor-decomposes realized hedge P&L into delta/gamma/vega/theta contributions — the "P&L explain" process a sell-side desk runs daily to check a hedge is behaving the way its Greeks predict | Components sum EXACTLY to total P&L by construction (an accounting identity asserted directly in the test suite); for a small isolated spot move, delta+gamma alone explain >98% of the real repriced P&L |
+| Basic (unilateral) CVA | Prices counterparty default risk by simulating forward exposure under the calibrated Bates SDE and discounting expected positive exposure against a hazard-rate-implied default probability | Collapses exactly to $0 when recovery=100%, hazard rate=0, or the position has only negative exposure (a short option); strictly positive and monotonic in the hazard rate for a real long position — deliberately scoped short of a production calculation (no wrong-way risk, netting/collateral, or DVA/FVA/MVA/KVA — see docs/phase-log.md) |
 
 Every method above independently arrives at the same price for the
 same European option — four structurally different approaches

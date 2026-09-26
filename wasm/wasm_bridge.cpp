@@ -17,6 +17,8 @@
 #include "deriv-engine/backtest.hpp"
 #include "deriv-engine/portfolio.hpp"
 #include "deriv-engine/var.hpp"
+#include "deriv-engine/pnl_attribution.hpp"
+#include "deriv-engine/cva.hpp"
 
 #include <emscripten/emscripten.h>
 #include <vector>
@@ -465,6 +467,106 @@ int bridge_run_stress_test(double spot, double vol, int scenario, double* out) {
         return 1;
     } catch (...) {
         return 0;
+    }
+}
+
+// ---------------------------------------------------------------------
+// P&L attribution (Phase 18), on the same short-gamma example book the
+// VaR/stress-test card above uses (make_example_market_maker_book) --
+// deliberately the SAME book, not a new one, so this card reads as "the
+// desk explaining today's move on the book it's already looking at",
+// not an unrelated toy. Doesn't need g_history loaded (attribute_pnl
+// only needs two market snapshots, not a price series), so this card
+// works independently of the backtest/VaR cards' history fetch.
+// spot_move_pct is a fraction (0.08 = +8%), vol_change_pts is in vol
+// POINTS (0.05 = +5 points, e.g. 75% -> 80%), matching attribute_pnl's
+// own dVol convention. Writes [total_pnl, delta_pnl, gamma_pnl,
+// vega_pnl, theta_pnl, unexplained_pnl, delta, gamma, vega, theta] into
+// out. Always succeeds for finite inputs; try/catch kept for
+// consistency with every other bridge function here.
+// ---------------------------------------------------------------------
+EMSCRIPTEN_KEEPALIVE
+int bridge_run_pnl_attribution(double spot, double vol, double spot_move_pct, double vol_change_pts,
+                                double days_elapsed, double* out) {
+    try {
+        MarketData before{spot, 0.0, 0.0, vol};
+        MarketData after{spot * (1.0 + spot_move_pct), 0.0, 0.0, vol + vol_change_pts};
+        Portfolio book = make_example_market_maker_book(spot);
+
+        PnLAttributionResult r = attribute_pnl(book, before, after, market_maker_pricer(), days_elapsed);
+
+        out[0] = r.total_pnl;
+        out[1] = r.delta_pnl;
+        out[2] = r.gamma_pnl;
+        out[3] = r.vega_pnl;
+        out[4] = r.theta_pnl;
+        out[5] = r.unexplained_pnl;
+        out[6] = r.delta;
+        out[7] = r.gamma;
+        out[8] = r.vega;
+        out[9] = r.theta;
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+// ---------------------------------------------------------------------
+// Basic CVA (Phase 18). Deliberately prices a single long 90-day
+// at-the-money call "bought OTC from a risky counterparty" -- NOT the
+// market-maker book above, which is mostly short options and would
+// mostly demonstrate the trivial zero-exposure case (see cva.hpp's
+// header comment: CVA only cares about POSITIVE exposure, what the
+// counterparty owes YOU). hazard_rate/recovery_rate/horizon_years/
+// num_time_steps/num_paths/seed and the Bates structural + jump
+// parameters all forward straight into compute_cva(); num_time_steps is
+// fixed at 12 (roughly monthly resolution) rather than exposed in the
+// UI, to keep the card's inputs to what actually changes the answer in
+// an interesting way. Writes [cva, expected_exposure_peak,
+// expected_exposure_avg, position_value] into out. Returns 1 on
+// success, 0 on invalid inputs (e.g. horizon_years <= 0).
+// ---------------------------------------------------------------------
+EMSCRIPTEN_KEEPALIVE
+int bridge_run_cva(double spot, double vol, double hazard_rate, double recovery_rate, double horizon_years,
+                    int num_paths, unsigned int seed, double kappa, double theta, double xi, double rho,
+                    double jump_intensity, double jump_mean, double jump_vol, double* out) {
+    try {
+        MarketData market{spot, 0.0, 0.0, vol};
+
+        EuropeanOption call{spot, 90.0 / 365.0, OptionType::Call};
+        Portfolio book;
+        book.positions.push_back(Position{Position::Kind::Option, call, 1.0, "long 1 90d ATM call (OTC)"});
+
+        HestonParams heston{vol * vol, kappa, theta, xi, rho};
+        BatesParams bates{heston, jump_intensity, jump_mean, jump_vol};
+
+        const int num_time_steps = 12;
+        CVAResult r = compute_cva(book, market, bates, market_maker_pricer(), hazard_rate, recovery_rate,
+                                   horizon_years, num_time_steps, num_paths, seed);
+
+        out[0] = r.cva;
+        out[1] = r.expected_exposure_peak;
+        out[2] = r.expected_exposure_avg;
+        out[3] = portfolio_value(book, market, market_maker_pricer());
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+// Standard "credit triangle" approximation converting a CDS spread to a
+// flat hazard rate -- see cva.hpp's header comment for what this is and
+// isn't (a real desk bootstraps a full credit curve from CDS quotes
+// across many tenors; this is the textbook single-point approximation).
+// Exposed as its own bridge call, not computed in JS, so this
+// conversion also comes out of the real compiled engine, not a
+// JS-side reimplementation of the formula.
+EMSCRIPTEN_KEEPALIVE
+double bridge_hazard_rate_from_cds_spread(double cds_spread, double recovery_rate) {
+    try {
+        return hazard_rate_from_cds_spread(cds_spread, recovery_rate);
+    } catch (...) {
+        return -1.0;
     }
 }
 

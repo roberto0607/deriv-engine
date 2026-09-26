@@ -1579,3 +1579,112 @@ phase relied on, not just "it looked right in the browser." Can explain
 the MC VaR discrepancy's real cause (`normal_distribution` being
 implementation-defined) without hand-waving it as generic
 floating-point noise.
+
+## Phase 18 — P&L attribution and basic CVA, in the engine and the live demo (done)
+
+**What was built:** two new risk modules, reusing the existing
+`Portfolio`/`PortfolioPricer` machinery from Phase 16 rather than
+inventing new plumbing:
+
+- **P&L attribution** (`include/deriv-engine/pnl_attribution.hpp`,
+  `src/pnl_attribution.cpp`): `portfolio_gamma`/`portfolio_vega`/
+  `portfolio_theta`, the same bump-and-reprice pattern
+  `portfolio_delta()` already used, extended to the other three Greeks;
+  and `attribute_pnl()`, which Taylor-decomposes a portfolio's realized
+  P&L between two market snapshots into delta/gamma/vega/theta
+  contributions plus an unexplained residual — the "P&L explain"
+  process a sell-side desk runs every day to check a hedge is behaving
+  the way its Greeks predict, not trusting them blindly.
+- **Basic (unilateral) CVA** (`include/deriv-engine/cva.hpp`,
+  `src/cva.cpp`): `compute_cva()` simulates forward exposure under the
+  calibrated Bates SDE (a fourth independent implementation of the SDE
+  stepping loop — see `var.cpp`'s own header comment for why this
+  project doesn't share that code between files), reprices the
+  portfolio at each future sample point on each path, and prices in
+  counterparty default risk as `(1 - recovery) * sum[EE(t) * discount(t)
+  * marginal default probability]` under a flat hazard rate.
+  `hazard_rate_from_cds_spread()` converts a CDS spread to that hazard
+  rate via the standard credit-triangle approximation.
+
+Both were then wired into the live WASM demo as two new cards (sections
+11-12), reusing the Phase 16 example book for P&L attribution (the same
+short-gamma book the VaR/stress-test card already displays, so the new
+card reads as "explaining a move on the book already on screen") and a
+single long 90-day at-the-money call for CVA (deliberately NOT the
+mostly-short example book, since CVA only cares about positive
+exposure — a short-heavy book would mostly demonstrate the trivial
+zero-exposure case). Even the CDS-spread-to-hazard-rate conversion is
+its own bridge function rather than a JS one-liner, keeping "every
+number on this page comes from the compiled engine" literally true.
+
+**Why this shape and not a bigger scope:** both are named, specific
+gaps identified when weighing this project against what a bank-side
+(not buy-side) quant role actually looks for — P&L explain and CVA/XVA
+are bread-and-butter sell-side desk work that a pure pricing-methods
+portfolio doesn't otherwise demonstrate. A production CVA calculation
+also needs wrong-way risk, netting/collateral (CSA) modeling, a real
+bootstrapped credit curve, and the rest of the XVA family (DVA/FVA/
+MVA/KVA) — each a multi-person desk's actual job, not a solo portfolio
+addition. `cva.hpp`'s header comment lists exactly what's out of scope
+rather than letting the simplification pass silently.
+
+**Verification:** the C++ modules were tested first, independently of
+the demo — 12 new test cases / 25 new assertions in `tests/test_main.cpp`,
+including: an accounting-identity test that `attribute_pnl`'s five
+components sum EXACTLY to total P&L (not approximately — a refactor
+bug would show up as a hard failure, not a rounding difference); a
+test that portfolio-level gamma/vega/theta (finite-difference) agree
+with `black_scholes_greeks`' analytical values on a single option; a
+test that `total_pnl` is bit-for-bit equal to `theta_pnl` for pure time
+decay (dS=0, dVol=0), since `attribute_pnl`'s decay-and-reprice step is
+in that case identical to what `portfolio_theta()` already computed
+internally; and for CVA, exact-zero checks at recovery=100%, hazard=0,
+and for a portfolio with only negative exposure (a short option),
+plus a monotonicity check (higher hazard rate -> higher CVA) and a
+"CVA can't exceed the position's own value" sanity bound. Full suite:
+304 assertions / 88 test cases, up from 279/76.
+
+The WASM build was then verified the same way Phase 17 was: `em++`
+compiled locally with the exact flags `pages.yml` uses, the two new
+bridge functions (`bridge_run_pnl_attribution`, `bridge_run_cva`,
+`bridge_hazard_rate_from_cds_spread`) checked from Node against a
+native C++ program computing the identical inputs (P&L attribution
+matched to 6 decimal places — no RNG involved; CVA's Monte Carlo number
+differed by ~1.4%, the same native-vs-WASM `std::normal_distribution`/
+`std::poisson_distribution` implementation-defined discrepancy already
+documented in Phase 17, not a new issue), and finally driven end-to-end
+with Playwright against a local static server serving the real
+`docs/` directory — both new cards' buttons clicked, real numbers
+rendered, a zero-CDS-spread run confirmed CVA collapses to exactly
+$0.00 live in the browser, and the pre-existing backtest/VaR cards
+re-checked to confirm nothing regressed. Zero console/page errors
+traceable to this phase (only the same pre-existing, unrelated Google
+Fonts proxy block noted in Phase 17).
+
+**Honest limitations:**
+- CVA's number of time steps (12, roughly monthly resolution over the
+  horizon) is fixed in the bridge function rather than exposed in the
+  UI — deliberately, to keep the card's inputs to what actually changes
+  the answer in an interesting way, but it means a user can't explore
+  the sensitivity to sampling resolution from the demo itself.
+- The CVA card prices a single fixed instrument (a long 90-day
+  at-the-money call) rather than letting the user build an arbitrary
+  book the way the VaR/stress cards' `make_example_market_maker_book`
+  does — a deliberate scope choice (see above: a short-heavy book makes
+  a worse demo of what CVA actually measures), but it means the card
+  can't show CVA on a mixed long/short portfolio without a code change.
+- Neither module is wrong-way-risk aware: CVA's exposure simulation and
+  the counterparty's default probability are modeled as independent,
+  which understates risk for a counterparty whose distress correlates
+  with the same moves that increase exposure to them (see `cva.hpp`).
+
+**Defend this:** can explain why P&L attribution's Greeks are computed
+once, at the "before" market, rather than at the "after" market or
+some average of the two — because that's what a desk actually does
+(yesterday's Greeks predict today's P&L, not Greeks re-derived with the
+benefit of hindsight). Can explain why CVA only counts POSITIVE
+exposure (`max(value, 0)`) rather than raw signed portfolio value — a
+counterparty's default only costs you money on the trades where they
+owed you, not the ones where you owed them. Can explain the credit-
+triangle approximation's own limitation (a flat single-point hazard
+rate, not a bootstrapped term structure) without being asked twice.
