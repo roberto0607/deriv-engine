@@ -50,6 +50,24 @@ reprices that exact contract with this engine's calibrated Heston
 model — displaying the real market price and the model's price side by
 side, not a theoretical number in isolation.
 
+Phase 21 adds an eleventh section — and a genuinely different pricing
+methodology, not another tab on an existing one: raw SVI (Gatheral, 2004)
+volatility surface fitting, the curve-fitting approach real crypto and
+equity vol desks actually quote off of day to day, as distinct from the
+stochastic-process story Heston/Bates tell. One button fetches the live
+Deribit chain, groups it by real expiry, and fits an independent 5-parameter
+SVI curve to every expiry with enough live contracts — each one checked
+live against two real no-arbitrage conditions (a butterfly check and a
+calendar check between adjacent expiries), not assumed valid. A chart
+plots the fitted curve against the real market points for whichever expiry
+you pick. Tested against the real, committed Deribit snapshot, this
+surfaced an honest, worth-reporting finding: every expiry from 15 days out
+to 281 days fits to within 0.22 percentage points of implied vol with both
+checks clean, while the chain's own sub-two-week expiries are hard enough
+for a 5-parameter curve to track that the butterfly check actively fails
+at 1, 3, and 4 days out — a real, known property of raw SVI on very
+short-dated smiles, reported plainly rather than hidden.
+
 ## Headline result
 
 Pulled the full live BTC options chain from Deribit (904 real

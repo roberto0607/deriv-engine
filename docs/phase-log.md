@@ -1948,3 +1948,156 @@ statistical object — each card's own documented limitations about its
 vol assumption (Phase 14, Phase 16, Phase 18) still apply exactly as
 before; only the number that seeds each field changed from
 hand-typed to fetched.
+
+## Phase 21 — SVI volatility surface fitting: one real curve per live expiry (done)
+
+**What was built:** a new pricing methodology, not a variant of one already
+here. `svi.hpp`/`svi.cpp` implement Gatheral's raw SVI parameterization
+(2004) — five parameters (a, b, ρ, m, σ) describing one expiry's entire
+implied-total-variance smile as a curve, fit directly to real market
+quotes rather than derived from a stochastic-process story the way
+Heston/Bates are. `svi_calibration.hpp`/`svi_calibration.cpp` fit those
+five parameters to a real expiry's market points by minimizing squared
+error in total-variance space, reusing the same Nelder-Mead simplex
+optimizer `heston_calibration.cpp` already had — pulled out into a new
+shared `optimizers.hpp` header so both calibrators call one implementation
+instead of two subtly different copies. Two real, published no-arbitrage
+checks come with it: a **butterfly check** (`svi_butterfly_condition`/
+`svi_check_butterfly_arbitrage_free`), which catches a fitted curve that
+implies a negative risk-neutral density somewhere in its wings, and a
+**calendar check** (`svi_check_calendar_arbitrage_free`), which catches
+two expiries' fitted curves implying that total variance decreases with
+time — a real, constructable arbitrage against the fitted surface itself,
+not just two curves that happen to disagree.
+
+Three new WASM exports (`bridge_svi_fit`, `bridge_svi_vol`,
+`bridge_svi_calendar_check`) wire this into a new eleventh section of the
+live demo, "Volatility surface: fitting SVI to the whole live chain." One
+button fetches the real live Deribit chain (the same fetch every other
+live card on this page uses), groups it by real expiry, fits one SVI
+curve per expiry with enough live contracts, and reports each expiry's
+fit quality and both arbitrage checks — plus a chart (a new inline SVG
+smile chart, `drawSviSmile`, following the same hand-drawn-SVG convention
+`drawSparkline` already established for the backtest card) plotting the
+fitted curve against the real market points, switchable across every
+expiry that fit via a pill row.
+
+**Why this shape:** the user's own framing, after being walked through why
+Heston/Bates are respectable but not what a real crypto or equity vol desk
+actually quotes off of day to day, was to add what those desks actually
+use. SVI is that answer: unlike a stochastic-vol model, which has to
+compromise across an entire smile with a handful of shared parameters, SVI
+fits each expiry's real, observed skew/smile shape essentially exactly,
+which is why it's the industry-standard curve for surface construction
+rather than a competing pricing model. One curve per expiry (not one
+shared fit across all of them, the way Heston's multi-expiry calibration
+in Phase 12 deliberately pools maturities) is the correct design here, not
+a missed opportunity to generalize: pooling would defeat SVI's entire
+purpose, which is matching each maturity's real shape exactly rather than
+explaining several maturities from one process. Fitting in total-variance
+space (not price space, unlike `calibrate_heston`, and not vol space
+directly) is the standard convention in the SVI literature (Gatheral &
+Jacquier) and is what makes both arbitrage-check formulas exact rather
+than approximate. Extracting the shared `optimizers.hpp` was a small,
+low-risk refactor done specifically to avoid a second copy of a
+71-line simplex implementation silently drifting out of sync with the
+first — verified with a full test-suite run immediately after, before any
+SVI-specific code was even written, to isolate that change from everything
+that came after it.
+
+**Verification:** four new unit tests, following this project's own
+established pattern for a new pricer. A synthetic-recovery test generates
+a full smile from known SVI parameters and confirms `calibrate_svi`
+recovers a curve matching it to within 0.01 percentage points of implied
+vol at every strike (SVI's 5 parameters, unlike Heston's kappa/theta,
+*are* all identifiable from one expiry, so unlike the Heston synthetic
+test this one does assert the fitted curve matches, not just the fit
+quality). A direct formula test hand-checks `svi_total_variance` and both
+arbitrage checks against simple, independently-computable cases, including
+a deliberately-broken calendar case (a lower total variance at a longer
+expiry) to confirm the check actually fails when it should, not just
+passes when given reasonable input. An edge-case test confirms the
+calibrator refuses to fit fewer than 5 real points rather than return an
+overfit, meaningless curve. A real-data test fits every liquid expiry
+(same [0.7, 1.4] moneyness filter the Phase 9 Heston real-data test
+already established, for the same reason) in the committed Deribit
+snapshot and found a genuine, monotonic, honestly-reported pattern: fit
+quality degrades from 3.74 percentage points at 1 day to 1.76 at 2 days to
+0.58 at 4 days, and the butterfly check actively **fails** at 1, 3, and 4
+days — a raw SVI curve's limited curvature budget cannot track how steep
+and narrow the real sub-two-week BTC smile gets without implying a
+negative density somewhere. Every expiry from 15 days out to 281 days,
+by contrast, fits under 0.22 percentage points with both arbitrage checks
+clean. The test asserts against that measured boundary (excludes expiries
+under 14 days, bounds the rest at 0.35pp with real headroom above the
+observed 0.21pp worst case) rather than an assumed one. The live demo
+itself was driven end-to-end with Playwright against mocked (not real,
+since this sandbox's network cannot reach Deribit — the same limitation
+Phase 19/20 already documented) Deribit responses built from a known SVI
+curve: the fit recovered the ground truth to 0.026pp, the multi-expiry
+case correctly reported "all adjacent pairs passed the calendar check,"
+and a deliberately-broken second scenario (a far expiry with much lower
+total variance) correctly reported "1 adjacent pair(s) failed the calendar
+check" and flagged the specific expiry in the results table — confirming
+the failure path surfaces honestly rather than silently passing. The full
+374-assertion, 102-test-case suite (up from 327/91 before this phase) and
+the entire rest of the live demo (all ten prior sections, all tab
+switching, the global live-fetch button) were re-verified with zero
+regressions after every change in this phase, and the real WASM module was
+actually compiled with `em++` in this environment (not merely
+syntax-checked) to confirm the new bridge exports build and run correctly
+end-to-end, not just compile.
+
+**Honest limitations:**
+- Sub-two-week expiries are a genuine, measured weak point for raw SVI on
+  this real chain, not a hypothetical caveat — the live demo will show a
+  failed butterfly check or an elevated error on those expiries when
+  they're live, and that's reported plainly rather than filtered out of
+  the live UI the way the test suite filters them out of its own pass/fail
+  bound. A smoother-in-time extension (e.g. SSVI, which ties nearby
+  expiries' curves together) is the standard fix for exactly this, and is
+  out of scope here.
+- Each expiry's curve is fit completely independently, so nothing
+  structurally prevents a calendar-arbitrage failure between two real,
+  individually-reasonable-looking fitted curves on a noisy real
+  snapshot — the calendar check exists specifically to catch this live
+  rather than assume independence is harmless, and it will report a
+  failure honestly when the real chain produces one, the same way the
+  butterfly check does for short-dated expiries.
+- SVI fits Deribit's own reported `mark_iv` per contract directly (the
+  same number every other live card on this page already reads), not an
+  independently re-solved implied vol the way this project's own
+  Phase 8 headline result does for the committed snapshot — reproducing
+  that independent Newton-Raphson solve against a live options chain
+  client-side, in the browser, for every fetch, was judged not worth the
+  added complexity for what the live SVI card is actually demonstrating
+  (surface *shape*, not an independent audit of Deribit's own reported
+  numbers, which the headline result already covers separately against
+  the frozen snapshot).
+- This is a curve fit, not a pricing model: it has no formula for pricing
+  an option directly the way Black-Scholes, Heston, and Bates do — its
+  output is a vol at a given strike/expiry, meant to feed one of this
+  project's actual pricers, not replace them. It isn't wired into the
+  vanilla/Heston/Bates pricer or the Live Market Check card's reprice
+  step in this phase; doing so (feeding a fitted SVI vol into Heston's
+  reprice instead of one contract's flat mark IV) is a natural, small
+  follow-up, not part of this phase's scope.
+
+**Defend this:** can explain why SVI is fit per-expiry rather than pooled
+across expiries the way Heston's multi-expiry calibration deliberately is
+— it's not an inconsistency between the two calibrators, it's that they're
+solving different problems (one process explaining several maturities at
+once vs. one curve matching one maturity's real shape exactly). Can
+explain why total-variance space is the correct space to fit in rather
+than price space or vol space directly, and what specifically breaks in
+the arbitrage-check formulas if it weren't. Can explain exactly what the
+butterfly and calendar checks each catch and why both are necessary (one
+catches a single curve implying nonsense, the other catches two otherwise-
+valid curves implying nonsense together), and can produce the real,
+measured, checked-not-assumed evidence for both: the sub-two-week failure
+pattern on the real committed snapshot, and the deliberately-constructed
+calendar-violation scenario the live demo was tested against. Can also
+explain why the shared Nelder-Mead extraction was verified in isolation
+before any SVI code depended on it, rather than trusting that a
+copy-paste-and-modify refactor didn't subtly change Heston's own
+calibration behavior.

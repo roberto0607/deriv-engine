@@ -11,6 +11,8 @@
 #include "deriv-engine/monte_carlo.hpp"
 #include "deriv-engine/implied_vol.hpp"
 #include "deriv-engine/heston.hpp"
+#include "deriv-engine/svi.hpp"
+#include "deriv-engine/svi_calibration.hpp"
 #include "deriv-engine/exotic_options.hpp"
 #include "deriv-engine/bates.hpp"
 #include "deriv-engine/price_history.hpp"
@@ -21,6 +23,7 @@
 #include "deriv-engine/cva.hpp"
 
 #include <emscripten/emscripten.h>
+#include <cmath>
 #include <vector>
 
 using namespace deriv;
@@ -232,6 +235,70 @@ double bridge_heston_price(double spot, double rate, double div,
     // volatility is unused by heston_price -- Heston prices off params, not market.volatility.
     return heston_price(make_euro(strike, T, type),
                          make_market(spot, rate, div, 0.0), params);
+}
+
+// SVI surface fitting (Phase 21). Fits ONE expiry's real strikes/IVs to a
+// single SVI curve -- see svi_calibration.hpp's header comment for why
+// one call covers one expiry, not the whole chain. strikes/ivs are two
+// parallel arrays of length num_points (ivs as plain fractions, e.g. 0.65
+// for 65%, matching every other vol input on this page); T is that
+// expiry's time to expiry in years. Writes
+// [a, b, rho, m, sigma, converged(0/1), rmse_iv_pp, num_points_used,
+//  butterfly_arbitrage_free(0/1), forward] into out.
+EMSCRIPTEN_KEEPALIVE
+void bridge_svi_fit(double* strikes, double* ivs, int num_points, double spot, double r, double T, double* out) {
+    std::vector<VolSurfacePoint> points;
+    points.reserve(static_cast<std::size_t>(num_points));
+    for (int i = 0; i < num_points; ++i) {
+        VolSurfacePoint p;
+        p.strike = strikes[i];
+        p.time_to_expiry = T;
+        p.moneyness = strikes[i] / spot;
+        p.type = OptionType::Call;  // unused by calibrate_svi, which fits solved_iv directly
+        p.market_iv_reported = ivs[i];
+        p.solved_iv = ivs[i];
+        p.converged = true;
+        p.underlying_price = spot;
+        p.market_price_usd = 0.0;
+        p.risk_free_rate = r;
+        points.push_back(p);
+    }
+
+    SviCalibrationResult result = calibrate_svi(points, spot, r, T);
+    out[0] = result.params.a;
+    out[1] = result.params.b;
+    out[2] = result.params.rho;
+    out[3] = result.params.m;
+    out[4] = result.params.sigma;
+    out[5] = result.converged ? 1.0 : 0.0;
+    out[6] = result.rmse_iv_pp;
+    out[7] = static_cast<double>(result.num_points_used);
+    out[8] = result.butterfly_arbitrage_free ? 1.0 : 0.0;
+    out[9] = result.forward;
+}
+
+// Evaluates an already-fitted SVI curve's implied vol at any strike --
+// used to draw the fitted smile curve across a strike range in the live
+// demo, and to feed a smile-consistent vol into the Live Market Check
+// card (section 10) instead of one contract's flat mark IV.
+EMSCRIPTEN_KEEPALIVE
+double bridge_svi_vol(double a, double b, double rho, double m, double sigma, double forward, double strike,
+                      double T) {
+    SviParams p{a, b, rho, m, sigma};
+    double k = std::log(strike / forward);
+    return svi_implied_vol(p, k, T);
+}
+
+// Calendar no-arbitrage check (svi.hpp) between two already-fitted
+// expiries (near/far by time to expiry). Returns 1 if far's total
+// variance is everywhere at least near's, 0 if not -- see svi.hpp's
+// header comment for what a failure here actually means.
+EMSCRIPTEN_KEEPALIVE
+int bridge_svi_calendar_check(double a_near, double b_near, double rho_near, double m_near, double sigma_near,
+                               double a_far, double b_far, double rho_far, double m_far, double sigma_far) {
+    SviParams near_params{a_near, b_near, rho_near, m_near, sigma_near};
+    SviParams far_params{a_far, b_far, rho_far, m_far, sigma_far};
+    return svi_check_calendar_arbitrage_free(near_params, far_params) ? 1 : 0;
 }
 
 // Asian option, Monte Carlo. geometric: 0 = arithmetic average (the real
