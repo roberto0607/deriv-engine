@@ -2101,3 +2101,44 @@ explain why the shared Nelder-Mead extraction was verified in isolation
 before any SVI code depended on it, rather than trusting that a
 copy-paste-and-modify refactor didn't subtly change Heston's own
 calibration behavior.
+
+### Phase 21 fix — live SVI results were showing a 100x-inflated error, plus a real outlier-quote problem on short-dated expiries
+
+First live run of Section 11 against real Deribit data showed rmse
+figures that made no sense on their face for the short-dated expiries
+(1d and 2d showed 620pp and 70pp -- an implied-vol error of hundreds of
+percentage points isn't a "hard fit," it's broken). Rather than accept
+that as more evidence for the already-documented short-dated-expiry
+limitation, it was investigated as a bug, and it was two separate real
+bugs:
+
+- **A 100x display bug.** `calibrate_svi`'s `rmse_iv_pp` is already
+  expressed in percentage points (`svi_calibration.cpp` multiplies the
+  vol difference by 100 itself before squaring and averaging). The live
+  demo's JS multiplied it by 100 *again* before rendering it. This alone
+  explains almost the entire gap: the "good" long-dated expiries' true
+  rmse (89d/180d/271d/362d: ~0.10/0.04/0.03/0.04pp) matched the native
+  test suite's documented worst case almost exactly once the double
+  scaling was removed -- it was never actually wrong, only mislabeled by
+  two orders of magnitude on screen.
+- **A real outlier-quote problem, separate from display.** Deribit still
+  reports an extrapolated "mark IV" for contracts with essentially no
+  real market -- a handful of illiquid, deep-wing quotes near expiry can
+  carry mark IVs of several hundred percent. Reproduced directly: feeding
+  `calibrate_svi` a synthetic 1-day bucket with a few such wild wing
+  quotes mixed into an otherwise sane smile pushed a genuine, unscaled
+  rmse to 100+pp, because an unweighted least-squares fit lets those
+  untradeable points dominate the objective. Fixed with a standard
+  robust-statistics trim (median absolute deviation, k=4) applied to each
+  expiry's live quotes before fitting, in the JS grouping step -- no
+  change to `calibrate_svi` itself, since the real, liquid part of the
+  chain was never the problem.
+
+Both were confirmed with a Playwright run against a mocked chain built
+specifically to contain wild wing quotes: pre-fix, a clean 15-point
+1-day smile fit at rmse 400pp; post-fix (both bugs corrected), the same
+bucket fits at rmse ~4pp -- elevated, consistent with the documented
+short-dated difficulty, but a real, honest number, not a broken one.
+Nothing in `calibrate_svi`, `svi.cpp`, or the WASM bridge changed; this
+was a live-demo-only fix (`docs/index.html`), so no rebuild of
+`deriv_engine.js` was needed.

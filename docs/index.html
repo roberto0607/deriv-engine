@@ -748,7 +748,7 @@
 
       <div class="live-bar" id="svi-fetch-bar">
         <button class="live-btn" id="svi-fetch-btn" type="button">⟳ Fit live SVI surface →</button>
-        <span class="live-bar-text" id="svi-fetch-text">fetches the real live Deribit chain, groups it by real expiry, and fits one SVI curve per expiry with enough live contracts (moneyness kept within roughly 0.7-1.4x spot, same liquidity filter this project's own test suite uses)</span>
+        <span class="live-bar-text" id="svi-fetch-text">fetches the real live Deribit chain, groups it by real expiry, and fits one SVI curve per expiry with enough live contracts (moneyness kept within roughly 0.7-1.4x spot, same liquidity filter this project's own test suite uses; a median/MAD filter also trims the handful of extrapolated, essentially untradeable deep-wing quotes Deribit still reports a mark IV for)</span>
       </div>
 
       <div id="svi-expiry-picker" style="display:none;">
@@ -761,7 +761,7 @@
 
       <div id="svi-results-table" style="display:none;margin-top:14px;"></div>
 
-      <div class="calc-note" id="svi-note" style="margin-top:14px;">Fits directly to Deribit's own reported mark IV per contract (the same number every other live card on this page reads), in total-variance space, per the standard SVI convention — see <code>svi_calibration.hpp</code>. "Butterfly OK" means the fitted curve never implies a negative risk-neutral density anywhere it was checked; a real, sampled check, not an assumption. Very short-dated expiries (under ~2 weeks) are the hardest part of any real chain for a 5-parameter curve to fit tightly — if one shows a high error or a failed butterfly check, that's an honest, documented property of raw SVI on steep, narrow short-dated smiles, not a bug being hidden.</div>
+      <div class="calc-note" id="svi-note" style="margin-top:14px;">Fits directly to Deribit's own reported mark IV per contract (the same number every other live card on this page reads), in total-variance space, per the standard SVI convention — see <code>svi_calibration.hpp</code>. Before fitting, a median/MAD outlier filter (k=4) drops any quote whose mark IV is wildly off the rest of that expiry's chain — a small number of illiquid, deep-wing contracts near expiry get an extrapolated mark IV from Deribit even with no real market behind them, and left in, they can drag a least-squares fit away from the tradeable part of the smile entirely. "Butterfly OK" means the fitted curve never implies a negative risk-neutral density anywhere it was checked; a real, sampled check, not an assumption. Very short-dated expiries (under ~2 weeks) are still the hardest part of any real chain for a 5-parameter curve to fit tightly — if one shows a high error or a failed butterfly check after outlier trimming, that's an honest, documented property of raw SVI on steep, narrow short-dated smiles, not a bug being hidden.</div>
     </div>
   </section>
 
@@ -1797,11 +1797,34 @@
           byExpiry[days].points.push({strike: parsed.strike, iv: s.mark_iv / 100.0});
         }
 
+        // Deribit reports an extrapolated "mark IV" even for contracts with
+        // essentially no real market -- a handful of illiquid, deep-wing
+        // quotes near expiry can carry mark IVs of several hundred percent.
+        // A plain least-squares fit lets a few such points, which nobody
+        // actually trades, drag the whole curve away from the real, liquid
+        // part of the smile (verified: an untrimmed bucket with a few
+        // wild wing quotes produced rmse in the hundreds of vol points).
+        // Trim with a standard robust-statistics filter -- median absolute
+        // deviation, k=4 -- before fitting, so a small number of outliers
+        // can't dominate a fit meant to represent the tradeable smile.
+        function madTrim(points){
+          if (points.length < 3) return points;
+          var ivs = points.map(function(p){ return p.iv; }).sort(function(a,b){ return a - b; });
+          var mid = Math.floor(ivs.length / 2);
+          var median = (ivs.length % 2 === 0) ? (ivs[mid - 1] + ivs[mid]) / 2 : ivs[mid];
+          var devs = points.map(function(p){ return Math.abs(p.iv - median); }).sort(function(a,b){ return a - b; });
+          var dmid = Math.floor(devs.length / 2);
+          var mad = (devs.length % 2 === 0) ? (devs[dmid - 1] + devs[dmid]) / 2 : devs[dmid];
+          var threshold = 4 * Math.max(mad, 0.02);  // floor avoids over-trimming an already-tight smile
+          return points.filter(function(p){ return Math.abs(p.iv - median) <= threshold; });
+        }
+
         sviFits = {};
         var fitDaysList = [];
         Object.keys(byExpiry).forEach(function(daysStr){
           var days = parseInt(daysStr, 10);
           var bucket = byExpiry[days];
+          bucket.points = madTrim(bucket.points);
           if (bucket.points.length < 5) return;  // calibrate_svi's own minimum -- see svi_calibration.cpp
 
           var strikes = bucket.points.map(function(p){ return p.strike; });
@@ -1822,7 +1845,10 @@
             sigma: Module.getValue(outPtr + 32, 'double')
           };
           var converged = Module.getValue(outPtr + 40, 'double') > 0.5;
-          var rmseIvPp = Module.getValue(outPtr + 48, 'double') * 100.0;
+          // rmse_iv_pp from calibrate_svi is already expressed in
+          // percentage points (see svi_calibration.cpp: it multiplies the
+          // vol difference by 100 itself) -- do not scale it again here.
+          var rmseIvPp = Module.getValue(outPtr + 48, 'double');
           var numPoints = Math.round(Module.getValue(outPtr + 56, 'double'));
           var butterflyOk = Module.getValue(outPtr + 64, 'double') > 0.5;
           var forward = Module.getValue(outPtr + 72, 'double');
