@@ -435,15 +435,24 @@
   </section>
 
   <section>
-    <div class="section-head"><span class="section-num">06</span><h2>Try it live</h2></div>
-    <p class="section-sub">This isn't a JS reimplementation — <code style="font-family:var(--mono);color:var(--teal)">wasm_bridge.cpp</code> compiles the real <code style="font-family:var(--mono);color:var(--teal)">src/black_scholes.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">tree_pricer.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">monte_carlo.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">implied_vol.cpp</code> and <code style="font-family:var(--mono);color:var(--teal)">heston.cpp</code> to WebAssembly via Emscripten. Every number below comes out of your actual compiled C++.</p>
-    <div class="calc-card">
-      <div class="calc-status" id="engine-status"><span class="pulse"></span><span id="engine-status-text">loading engine…</span></div>
+    <div class="section-head"><span class="section-num">06</span><h2>Try it live: pricing methods</h2></div>
+    <p class="section-sub">This isn't a JS reimplementation — <code style="font-family:var(--mono);color:var(--teal)">wasm_bridge.cpp</code> compiles the real C++ (Black-Scholes, trees, Monte Carlo, Heston, the Asian/Barrier exotics simulator, and Bates) to WebAssembly via Emscripten. Every number below comes out of your actual compiled engine. One live-data fetch (below) feeds every calculator on this page — pricing, VaR/P&amp;L, and CVA alike — so you only ever look up real numbers once.</p>
 
-      <div class="live-bar" id="live-bar">
-        <button class="live-btn" id="live-fetch-btn" type="button">⟳ Fetch live BTC data →</button>
-        <span class="live-bar-text" id="live-bar-text">pulls real spot price + a real near-the-money option's market-implied vol straight from Deribit's public API (browser-to-Deribit, no backend) and fills the two fields below</span>
+    <div class="live-bar" id="live-bar">
+      <button class="live-btn" id="live-fetch-btn" type="button">⟳ Fetch live BTC data →</button>
+      <span class="live-bar-text" id="live-bar-text">pulls real spot price + a real near-the-money option's market-implied vol from Deribit's public API and fills Spot/Volatility on every calculator on this page (pricing, VaR/P&amp;L, CVA) — not just this one</span>
+    </div>
+
+    <div class="field" style="margin-top:2px;"><label>Pricing mode</label>
+      <div class="pill-row" id="pricing-mode-pills">
+        <button class="pill active" data-tab="tab-vanilla">Vanilla / Tree / MC / Heston</button>
+        <button class="pill" data-tab="tab-exotic">Exotic: Asian &amp; Barrier</button>
+        <button class="pill" data-tab="tab-bates">Bates (jumps)</button>
       </div>
+    </div>
+
+    <div id="tab-vanilla" class="calc-card">
+      <div class="calc-status" id="engine-status"><span class="pulse"></span><span id="engine-status-text">loading engine…</span></div>
 
       <div class="calc-grid">
         <div class="field"><label for="in-spot">Spot ($)</label><input id="in-spot" type="number" value="100000" step="1000"></div>
@@ -481,12 +490,8 @@
       <div class="calc-note" id="calc-note">Analytical Greeks are computed from the closed-form solution; the tree and Monte Carlo columns exist to show three independently-derived methods agreeing on the same price.</div>
       <div class="calc-note" id="heston-calibration-note">Heston's kappa/xi/rho use illustrative defaults (calibrated values load below once available).</div>
     </div>
-  </section>
 
-  <section>
-    <div class="section-head"><span class="section-num">07</span><h2>Exotic options: Asian &amp; Barrier</h2></div>
-    <p class="section-sub">Path-dependent payoffs — the payoff depends on the option's whole price path, not just where it ends up, so these are priced by simulating that path (<code style="font-family:var(--mono);color:var(--teal)">src/exotic_options.cpp</code>), not a closed formula. Every result here is checked live, right in this card, against a closed form or a model-independent identity.</p>
-    <div class="calc-card">
+    <div id="tab-exotic" class="calc-card" style="display:none;">
       <div class="calc-status ready" id="exotic-status"><span class="pulse"></span><span>uses the same compiled engine as the calculator above</span></div>
 
       <div class="calc-grid">
@@ -536,12 +541,8 @@
       <div class="calc-note" id="ex-closed-form-note"></div>
       <div class="calc-note" id="ex-explainer">Every path either touches the barrier or it doesn't — so a knock-out and its same-direction knock-in split every path exactly in two, and together always add up to the plain vanilla price. That's true no matter what the underlying does; it's why "Out + In" checks against "Vanilla" above without needing its own formula.</div>
     </div>
-  </section>
 
-  <section>
-    <div class="section-head"><span class="section-num">08</span><h2>Bates: what jumps add on top of Heston</h2></div>
-    <p class="section-sub">Heston alone can only move price through continuous diffusion — however wild the vol-of-vol. Bates adds a compound Poisson jump process on top (<code style="font-family:var(--mono);color:var(--teal)">src/bates.cpp</code>), so a sudden 20%-in-an-afternoon move is actually in the model, not just approximated by cranking up sigma.</p>
-    <div class="calc-card">
+    <div id="tab-bates" class="calc-card" style="display:none;">
       <div class="calc-status ready" id="bates-status"><span class="pulse"></span><span>uses the same compiled engine as the calculators above</span></div>
 
       <div class="calc-grid">
@@ -567,9 +568,8 @@
       <div class="calc-note" id="bates-note">Jump params default to the real values estimated from BTC's own price history (Phase 15: a simple 4-sigma threshold on daily log returns — see docs/numerics.md) — not arbitrary. Set intensity to 0 to confirm Bates collapses exactly onto Heston, the same identity the test suite checks.</div>
     </div>
   </section>
-
   <section>
-    <div class="section-head"><span class="section-num">09</span><h2>Historical backtest: does jump-awareness actually help?</h2></div>
+    <div class="section-head"><span class="section-num">07</span><h2>Historical backtest: does jump-awareness actually help?</h2></div>
     <p class="section-sub">Rolls a fresh at-the-money call every <code style="font-family:var(--mono);color:var(--teal)">window_days</code> and delta-hedges it daily against the <i>real</i> BTC price path — not a simulation (<code style="font-family:var(--mono);color:var(--teal)">src/backtest.cpp</code>). Runs live, right here, over the full committed 16-year history (<code style="font-family:var(--mono);color:var(--teal)">data/btc_price_history.csv</code>), for all three models.</p>
     <div class="calc-card">
       <div class="calc-status" id="history-status"><span class="pulse"></span><span id="history-status-text">loading real price history…</span></div>
@@ -602,9 +602,17 @@
   </section>
 
   <section>
-    <div class="section-head"><span class="section-num">10</span><h2>Portfolio VaR &amp; real historical stress testing</h2></div>
-    <p class="section-sub">A short strangle/straddle book, partially delta-hedged (<code style="font-family:var(--mono);color:var(--teal)">make_example_market_maker_book</code> in <code style="font-family:var(--mono);color:var(--teal)">src/portfolio.cpp</code>) — real short-gamma risk, not a toy. VaR computed three independent ways; stress-tested against three real BTC crashes.</p>
-    <div class="calc-card">
+    <div class="section-head"><span class="section-num">08</span><h2>Portfolio risk: VaR, stress testing &amp; P&amp;L attribution</h2></div>
+    <p class="section-sub">A short strangle/straddle book, partially delta-hedged (<code style="font-family:var(--mono);color:var(--teal)">make_example_market_maker_book</code> in <code style="font-family:var(--mono);color:var(--teal)">src/portfolio.cpp</code>) — real short-gamma risk, not a toy. VaR/stress testing measures the risk on this book directly; P&amp;L attribution explains a realized move on the same book after the fact.</p>
+
+    <div class="field" style="margin-top:2px;"><label>View</label>
+      <div class="pill-row" id="risk-mode-pills">
+        <button class="pill active" data-tab="tab-var">VaR &amp; stress testing</button>
+        <button class="pill" data-tab="tab-pnl">P&amp;L attribution</button>
+      </div>
+    </div>
+
+    <div id="tab-var" class="calc-card">
       <div class="calc-status" id="var-status"><span class="pulse"></span><span id="var-status-text">waiting on real price history…</span></div>
 
       <div class="calc-grid">
@@ -643,12 +651,8 @@
       </div>
       <div class="calc-note" id="stress-note"></div>
     </div>
-  </section>
 
-  <section>
-    <div class="section-head"><span class="section-num">11</span><h2>P&amp;L attribution: is the hedge actually working?</h2></div>
-    <p class="section-sub">Taylor-decomposes a realized move on the <i>same</i> short-gamma example book above into delta/gamma/vega/theta contributions plus an unexplained residual (<code style="font-family:var(--mono);color:var(--teal)">src/pnl_attribution.cpp</code>) — the "P&amp;L explain" process a sell-side desk runs every day to check a hedge is behaving the way its Greeks predict, not just trusting the Greeks blindly.</p>
-    <div class="calc-card">
+    <div id="tab-pnl" class="calc-card" style="display:none;">
       <div class="calc-status ready" id="pnl-status"><span class="pulse"></span><span>uses the same compiled engine and example book as the calculators above</span></div>
 
       <div class="calc-grid">
@@ -677,9 +681,8 @@
       <div class="calc-note" id="pnl-note">Greeks are computed once, at the "before" market (the same bump-and-reprice approach <code style="font-family:var(--mono);color:var(--teal)">portfolio_delta()</code> already used for VaR above) — exactly what a desk does in practice: yesterday's Greeks predict today's P&amp;L. The five components above sum EXACTLY to the total P&amp;L shown (an accounting identity, checked directly in the test suite) — a large unexplained residual is the signal a desk treats as a red flag, not something to average away.</div>
     </div>
   </section>
-
   <section>
-    <div class="section-head"><span class="section-num">12</span><h2>Basic CVA: pricing in counterparty default risk</h2></div>
+    <div class="section-head"><span class="section-num">09</span><h2>Basic CVA: pricing in counterparty default risk</h2></div>
     <p class="section-sub">A single call bought OTC from a risky counterparty (<code style="font-family:var(--mono);color:var(--teal)">src/cva.cpp</code>) — simulates forward exposure under the calibrated Bates SDE and prices in what their possible default costs you. Deliberately simplified: unilateral (no DVA), a single flat hazard rate, no wrong-way risk, no netting or collateral — see the note below.</p>
     <div class="calc-card">
       <div class="calc-status ready" id="cva-status"><span class="pulse"></span><span>uses the same compiled engine as the calculators above</span></div>
@@ -710,7 +713,7 @@
   </section>
 
   <section>
-    <div class="section-head"><span class="section-num">13</span><h2>Live market check: model vs. the real order book</h2></div>
+    <div class="section-head"><span class="section-num">10</span><h2>Live market check: model vs. the real order book</h2></div>
     <p class="section-sub">Every other card above prices whatever numbers you type in — this one pulls Bitcoin's real live price and the real live BTC options order book directly from Deribit's public API (confirmed CORS-open from a browser, no backend or API key needed), finds the closest real, currently-tradeable contract to your target, and reprices it with this engine's own calibrated Heston model using the market's own implied vol as the input. This is the actual "does my model agree with the real market" check, not a hypothetical one.</p>
     <div class="calc-card">
       <div class="calc-status ready" id="live-market-status"><span class="pulse"></span><span>uses the same compiled engine as the calculators above, plus a live client-side call to Deribit's public API</span></div>
@@ -1501,7 +1504,7 @@
     });
   }
 
-  // -- Section 06 add-on: "Fetch live BTC data" fills Spot + Volatility --
+  // -- Section 06 add-on: "Fetch live BTC data" fills Spot + Volatility on EVERY calculator on the page --
   var liveBtn = document.getElementById('live-fetch-btn');
   var liveBarText = document.getElementById('live-bar-text');
   if (liveBtn) {
@@ -1524,12 +1527,21 @@
         }
         if (!best) throw new Error('no live option with a usable implied vol was found');
 
-        document.getElementById('in-spot').value = Math.round(d.spot);
-        document.getElementById('in-vol').value = best.iv.toFixed(1);
+        var roundedSpot = Math.round(d.spot);
+        var ivStr = best.iv.toFixed(1);
+
+        // Fill every card's Spot/Volatility fields, not just the active tab's.
+        var spotIds = ['in-spot', 'ex-spot', 'bt-spot', 'var-spot', 'pnl-spot', 'cva-spot'];
+        var volIds  = ['in-vol',  'ex-vol',  'bt-vol',  'var-vol',  'pnl-vol',  'cva-vol'];
+        spotIds.forEach(function(id){ var el = document.getElementById(id); if (el) el.value = roundedSpot; });
+        volIds.forEach(function(id){ var el = document.getElementById(id); if (el) el.value = ivStr; });
+
         liveBarText.className = 'live-bar-text ok';
-        liveBarText.textContent = 'loaded: spot $' + Math.round(d.spot).toLocaleString('en-US') +
-          ' · vol ' + best.iv.toFixed(1) + '% (real Deribit mark IV from ' + best.parsed.name +
-          ', ' + Math.round(best.parsed.days) + 'd out) — click "Price it" above to reprice';
+        liveBarText.textContent = 'loaded: spot $' + roundedSpot.toLocaleString('en-US') +
+          ' · vol ' + ivStr + '% (real Deribit mark IV from ' + best.parsed.name +
+          ', ' + Math.round(best.parsed.days) + 'd out) — filled into every calculator on this page; click each card\'s run/price button to reprice with these numbers';
+
+        // Reprice whichever calculators can be rerun automatically without extra user input.
         if (Module) price();
       }).catch(function(err){
         liveBarText.className = 'live-bar-text err';
@@ -1539,6 +1551,25 @@
       });
     });
   }
+
+  // -- Tab switching for merged cards (pricing modes, risk views) --
+  function wireTabPills(pillRowId, tabIds) {
+    var row = document.getElementById(pillRowId);
+    if (!row) return;
+    var pills = row.querySelectorAll('.pill');
+    pills.forEach(function(pill){
+      pill.addEventListener('click', function(){
+        var target = pill.getAttribute('data-tab');
+        pills.forEach(function(p){ p.classList.toggle('active', p === pill); });
+        tabIds.forEach(function(id){
+          var el = document.getElementById(id);
+          if (el) el.style.display = (id === target) ? '' : 'none';
+        });
+      });
+    });
+  }
+  wireTabPills('pricing-mode-pills', ['tab-vanilla', 'tab-exotic', 'tab-bates']);
+  wireTabPills('risk-mode-pills', ['tab-var', 'tab-pnl']);
 
   // -- Section 13: real order-book lookup + reprice with this engine's Heston model --
   var lmRunBtn = document.getElementById('lm-run-btn');

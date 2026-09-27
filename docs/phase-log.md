@@ -1797,3 +1797,154 @@ today's real IV; disagreement doesn't necessarily mean the model is
 wrong — it can just as easily mean the specific live contract matched
 is thin, or that IV alone doesn't capture the smile's actual shape at
 that strike the way a full recalibration against the live chain would.
+
+## Phase 20 — Consolidating the live demo: tabbed calculators, one live-data fetch for the whole page (done)
+
+**What was built:** the live demo had grown to thirteen separate
+sections, several of which were really the same underlying idea shown
+three different ways (vanilla/tree/MC/Heston, the two exotics, and
+Bates were three separate full-page cards for "price a European-style
+option"; VaR/stress-testing and P&L attribution were two separate
+cards built on the same example short-gamma book). This phase merges
+them into two tab-switched cards instead of removing anything: section
+06 ("Try it live: pricing methods") now holds three pill-selected tabs
+— Vanilla/Tree/MC/Heston, Exotic (Asian & Barrier), and Bates — and
+what is now section 08 ("Portfolio risk: VaR, stress testing & P&L
+attribution") holds two tabs — VaR/stress and P&L attribution. Every
+calculator's own inputs, buttons, and output panel are unchanged
+inside its tab; only the wrapper and a pill-row switcher were added.
+The remaining, genuinely distinct cards were renumbered to fill the
+gaps: Historical backtest is now section 07, Basic CVA is section 09,
+and Live market check is section 10 — same content, no changes beyond
+the number in the section head.
+
+The other half of this phase: the "Fetch live BTC data" button, which
+Phase 19 only wired into the vanilla pricer's Spot/Volatility fields,
+now fills Spot and Volatility on every calculator on the page in one
+click — the vanilla, exotic, and Bates tabs, plus VaR/stress, P&L
+attribution, and CVA — instead of six separate live-fetch buttons or
+requiring the same lookup to be repeated per card. The button, its
+Deribit fetch, and its "closest to at-the-money, ~90 days out"
+selection logic from Phase 19 are otherwise unchanged; only the fill
+step at the end was widened from two field writes to twelve.
+
+**Why this shape:** the user's own framing was that having "so many
+different calculators" that don't share data felt disjointed —
+several were variations on one question (price this option under
+model X) rather than genuinely separate tools, and typing the same
+spot/vol into six boxes by hand undercuts the point of a "live data"
+feature. Tabs were chosen over deleting any pricer or flattening them
+into one mega-form: every existing model's validation story (tree vs.
+closed-form convergence, Heston vs. flat-vol, Bates vs. Heston) still
+needs its own inputs and its own output panel to make sense on its
+own, so collapsing them into one shared form would either hide inputs
+some models don't use or silently reuse a value (like Bates' jump
+parameters) in a context where it's meaningless. Reusing the existing
+`.pill-row`/`.pill` CSS already used for the window-length and
+stress-scenario pickers, rather than inventing new tab styling, keeps
+the page visually consistent and meant zero new CSS was needed — only
+a `data-tab` attribute on each button and a small `wireTabPills()`
+helper that shows the matching tab and hides its siblings. Each
+existing `calc-card` div was wrapped with a unique `id` and toggled via
+`style.display`, with its internal HTML, IDs, and JS handlers left
+completely untouched — so the price/exotic/Bates/VaR/P&L computation
+functions needed zero changes; only the DOM wrapper and one click
+handler were added. This was chosen over rewriting the calculation
+logic into a single unified multi-mode function, which would have
+touched far more surface area for the same visible result and risked
+introducing a real numerical bug in code that was already correct and
+tested.
+
+For the live-data fill, filling every card's fields from one fetch —
+rather than adding five more per-card fetch buttons — was the direct
+ask ("have them all pull live BTC data from exchange"): one Deribit
+lookup already returns the one number (spot) and one representative
+implied vol that every card's Spot/Volatility inputs want, so there's
+no reason to hit the API six times or make the user repeat the click.
+Cards whose reprice needs more than Spot/Vol to run (VaR, P&L, CVA,
+and the backtest all require a "run" click because they run Monte
+Carlo simulations that take a moment) still require their own button
+press after the fields are filled — auto-triggering a multi-second
+simulation the instant a fetch completes, without the user asking for
+it, would be a worse experience than a filled-in form waiting for
+"Run".
+
+**Verification:** the full merge was applied directly to
+`docs/index.html` (no intermediate build step — this is a static
+page), then checked three ways. First, a scripted diff of every
+element `id` in the affected region before and after confirmed zero
+IDs were dropped, renamed, or duplicated across the whole file — all
+164 pre-existing IDs (all six calculators' fields, buttons, and output
+spans) are still present, plus the new pill-row and tab-wrapper IDs.
+Second, the page was served from a local static server and driven with
+Playwright: clicking each pill in both tab groups correctly shows the
+target tab and hides its siblings (verified via `is_visible()` on each
+tab both before and after each click, for all three pricing tabs and
+both risk tabs); the vanilla pricer's "Price it" button was clicked
+after the merge and produced the same numbers as before this phase
+(Black-Scholes $12,392.30, Heston $11,950.52 on default inputs — an
+exact match, confirming the wrapping change didn't alter any
+computation); and the WASM engine reported "loaded" with zero
+JavaScript exceptions (`page.on('pageerror', ...)` captured none)
+across the whole interaction. Third, the live-fetch button was
+clicked; as expected from this sandbox's blocked egress to Deribit
+(same constraint as Phase 19), it failed with a plain "could not fetch
+live data" message rather than hanging or throwing, and every field it
+would have filled was left untouched at its prior value — confirming
+the failure path doesn't corrupt the page. The actual live-success
+fill across all six cards could not be exercised from this sandbox for
+the same reason Phase 19's live-success path couldn't be: this only
+the user's own browser, with real network access to Deribit, can
+confirm end-to-end (open the page, click "Fetch live BTC data" once,
+and check that Spot/Volatility updated on the exotic, Bates, VaR/
+stress, P&L, and CVA tabs — not just the vanilla one).
+
+**Honest limitations:**
+- The live-fetch fill still only writes Spot and Volatility. It does
+  not re-run any calculator automatically except the vanilla pricer
+  (which was already wired that way in Phase 19) — every other tab
+  still needs its own "Price it"/"Run" click after the fields update,
+  by design (see above), but a user who doesn't notice the fields
+  changed and doesn't press the button will see stale output sitting
+  next to fresh inputs until they do.
+- Bates' vol field is still separately labeled "Base volatility (%)"
+  and semantically distinct from a flat Black-Scholes vol (it's the
+  long-run level the jump-diffusion process reverts to, not a constant
+  vol), and VaR/P&L/CVA's "Annualized vol (%)" is a plain constant-vol
+  assumption for their simulations — the live fetch fills all of them
+  with the same one number (a single near-the-money mark IV) as a
+  simplification, the same one Phase 19 already made for the vanilla
+  and Heston reprice; it does not mean these fields' inputs are now
+  interchangeable or equally rigorous.
+- The pill/tab mechanism is pure client-side `display:none` toggling
+  with no URL state or persistence — reloading the page or sharing a
+  link always resets to the first tab in each group (Vanilla and VaR),
+  which matters if someone bookmarks or shares a link expecting to
+  land on Bates or P&L attribution specifically.
+- As before, sections 06's live-fetch and section 10's live market
+  check remain the only parts of the page with a runtime dependency on
+  a third party; the newly-merged tabs inside section 06 and section
+  08 inherit that same dependency only insofar as they can now be
+  pre-filled by it — their own core pricing/simulation logic is still
+  fully self-contained and works with zero network access if the
+  fields are typed in by hand.
+
+**Defend this:** can explain why tabs (hide/show existing cards) were
+chosen over either deleting pricers or merging their calculation logic
+into one function — the former loses each model's independent
+validation story, the latter risks a real bug in previously-correct,
+tested numerical code for a change that's purely about page
+organization. Can explain why the live-fetch fill writes fields
+without auto-running every calculator: VaR/P&L/CVA/backtest all run
+Monte Carlo simulations that take real wall-clock time, and
+auto-triggering all four the instant a fetch resolves would surprise
+the user with unrequested computation rather than leaving them in
+control of when to run each one. Can explain exactly what the "same
+one mark IV feeds six differently-shaped vol inputs" simplification
+does and doesn't cost: it's a fast, real, defensible starting point
+that saves six manual lookups, not a claim that Bates' jump-vol,
+Heston's vol-of-vol, or a constant-vol VaR assumption are the same
+statistical object — each card's own documented limitations about its
+vol assumption (Phase 14, Phase 16, Phase 18) still apply exactly as
+before; only the number that seeds each field changed from
+hand-typed to fetched.

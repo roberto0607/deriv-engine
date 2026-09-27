@@ -12,35 +12,43 @@ data — validated against a real exchange, not just textbook values.
 
 **[roberto0607.github.io/deriv-engine](https://roberto0607.github.io/deriv-engine/)**
 — the actual C++ (Black-Scholes, binomial tree, Monte Carlo, Heston,
-Bates, plus dedicated cards for Asian/Barrier options, the Phase 15
-historical backtest, Phase 16 portfolio VaR/stress testing, and Phase
-18 P&L attribution/CVA) compiled to WebAssembly via Emscripten and run
-directly in the browser. Every number on that page comes out of the
+Bates, Asian/Barrier options, the Phase 15 historical backtest, Phase
+16 portfolio VaR/stress testing, and Phase 18 P&L attribution/CVA)
+compiled to WebAssembly via Emscripten and run directly in the
+browser. As of Phase 20, the page is organized as ten sections rather
+than thirteen: the vanilla/tree/MC/Heston pricer, the Asian/Barrier
+exotics, and Bates now share one tabbed card ("Try it live: pricing
+methods"), and VaR/stress-testing and P&L attribution share a second
+tabbed card — each tab is the same calculator as before, unchanged
+internally, just switchable by a pill selector instead of being a
+separate full-page section. Every number on that page comes out of the
 real compiled engine, not a JS reimplementation, and the Heston/Bates
-cards' kappa/theta/xi/rho are calibrated against the real Deribit
-chain by CI on every push (see `tools/calibrate_heston.cpp`), not
-hand-typed. The exotics card goes a step further and runs its own
-validation checks (closed form, in/out parity) live in the browser,
-not just a price. The backtest and VaR cards go further still: they
-fetch the real 16-year committed price history
-(`docs/btc_price_history.csv`) over HTTP, parse it with this
-project's actual C++ CSV parser compiled to WASM (not JavaScript),
-and run the real rolling-window backtest and historical/Monte Carlo
-VaR live in your browser — reproducing the exact numbers in the
-table below, not a canned screenshot. The P&L attribution and CVA
-cards close out the risk side of the engine: one decomposes a realized
-move on the example book into the Greeks that actually drove it, the
-other prices in a counterparty's default risk on a real position —
-even the CDS-spread-to-hazard-rate conversion runs through the
-compiled engine rather than a JS one-liner. Phase 19 connects the demo
-to the live market itself: a "Fetch live BTC data" button pulls the
-real current spot and a real near-the-money option's market-implied
-vol straight from Deribit's public API into the main calculator, and a
-dedicated live market-check card finds the closest real, currently-
-tradeable BTC option to a target strike/expiry and reprices that exact
-contract with this engine's calibrated Heston model — displaying the
-real market price and the model's price side by side, not a
-theoretical number in isolation.
+tabs' kappa/theta/xi/rho are calibrated against the real Deribit chain
+by CI on every push (see `tools/calibrate_heston.cpp`), not hand-typed.
+The exotics tab goes a step further and runs its own validation checks
+(closed form, in/out parity) live in the browser, not just a price.
+The backtest and VaR cards go further still: they fetch the real
+16-year committed price history (`docs/btc_price_history.csv`) over
+HTTP, parse it with this project's actual C++ CSV parser compiled to
+WASM (not JavaScript), and run the real rolling-window backtest and
+historical/Monte Carlo VaR live in your browser — reproducing the
+exact numbers in the table below, not a canned screenshot. The P&L
+attribution and CVA cards close out the risk side of the engine: one
+decomposes a realized move on the example book into the Greeks that
+actually drove it, the other prices in a counterparty's default risk
+on a real position — even the CDS-spread-to-hazard-rate conversion
+runs through the compiled engine rather than a JS one-liner. Phase 19
+connects the demo to the live market itself, and Phase 20 widened it
+to the whole page: one "Fetch live BTC data" button pulls the real
+current spot and a real near-the-money option's market-implied vol
+straight from Deribit's public API and fills Spot/Volatility on every
+calculator on the page — pricing, exotics, Bates, VaR/stress, P&L
+attribution, and CVA — instead of typing the same numbers into each
+one by hand. A dedicated live market-check card finds the closest
+real, currently-tradeable BTC option to a target strike/expiry and
+reprices that exact contract with this engine's calibrated Heston
+model — displaying the real market price and the model's price side by
+side, not a theoretical number in isolation.
 
 ## Headline result
 
