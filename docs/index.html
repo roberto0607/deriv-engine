@@ -227,6 +227,22 @@
   .calc-note{font-size:12.5px;color:var(--text-faint);}
   .calc-note code{color:var(--teal);}
 
+  /* ---- live Deribit data fetch (Phase 19) ---- */
+  .live-bar{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:10px 14px;background:var(--bg-inset);border:1px solid var(--border);border-radius:8px;
+  }
+  .live-btn{
+    font-family:var(--mono);font-size:12.5px;font-weight:600;white-space:nowrap;
+    background:transparent;color:var(--teal);border:1px solid var(--teal-dim);border-radius:6px;
+    padding:8px 14px;cursor:pointer;
+  }
+  .live-btn:hover{background:var(--teal-dim);color:var(--text);}
+  .live-btn:disabled{opacity:0.5;cursor:default;}
+  .live-bar-text{font-family:var(--mono);font-size:11.5px;color:var(--text-faint);}
+  .live-bar-text.ok{color:var(--green);}
+  .live-bar-text.err{color:var(--red);}
+
   /* ---- pill toggles (window length, scenario picker) ---- */
   .pill-row{display:flex;gap:8px;flex-wrap:wrap;}
   .pill{
@@ -423,6 +439,11 @@
     <p class="section-sub">This isn't a JS reimplementation — <code style="font-family:var(--mono);color:var(--teal)">wasm_bridge.cpp</code> compiles the real <code style="font-family:var(--mono);color:var(--teal)">src/black_scholes.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">tree_pricer.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">monte_carlo.cpp</code>, <code style="font-family:var(--mono);color:var(--teal)">implied_vol.cpp</code> and <code style="font-family:var(--mono);color:var(--teal)">heston.cpp</code> to WebAssembly via Emscripten. Every number below comes out of your actual compiled C++.</p>
     <div class="calc-card">
       <div class="calc-status" id="engine-status"><span class="pulse"></span><span id="engine-status-text">loading engine…</span></div>
+
+      <div class="live-bar" id="live-bar">
+        <button class="live-btn" id="live-fetch-btn" type="button">⟳ Fetch live BTC data →</button>
+        <span class="live-bar-text" id="live-bar-text">pulls real spot price + a real near-the-money option's market-implied vol straight from Deribit's public API (browser-to-Deribit, no backend) and fills the two fields below</span>
+      </div>
 
       <div class="calc-grid">
         <div class="field"><label for="in-spot">Spot ($)</label><input id="in-spot" type="number" value="100000" step="1000"></div>
@@ -685,6 +706,34 @@
       </div>
 
       <div class="calc-note" id="cva-note">Hazard rate is derived from the CDS spread via the standard "credit triangle" approximation (hazard ≈ spread / (1 − recovery)) — itself computed by the real compiled engine (<code style="font-family:var(--mono);color:var(--teal)">hazard_rate_from_cds_spread()</code>), not JavaScript. Set the CDS spread to 0, or recovery to 99%, to confirm CVA collapses to exactly 0 — the same identities the test suite checks. Out of scope, and documented as such: wrong-way risk (a counterparty's default is modeled as independent of your exposure to them, which understates risk for correlated names), netting/collateral, and the other XVA family members (FVA/MVA/KVA) a full desk computes alongside this.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><span class="section-num">13</span><h2>Live market check: model vs. the real order book</h2></div>
+    <p class="section-sub">Every other card above prices whatever numbers you type in — this one pulls Bitcoin's real live price and the real live BTC options order book directly from Deribit's public API (confirmed CORS-open from a browser, no backend or API key needed), finds the closest real, currently-tradeable contract to your target, and reprices it with this engine's own calibrated Heston model using the market's own implied vol as the input. This is the actual "does my model agree with the real market" check, not a hypothetical one.</p>
+    <div class="calc-card">
+      <div class="calc-status ready" id="live-market-status"><span class="pulse"></span><span>uses the same compiled engine as the calculators above, plus a live client-side call to Deribit's public API</span></div>
+
+      <div class="calc-grid">
+        <div class="field"><label for="lm-strike">Target strike ($)</label><input id="lm-strike" type="number" value="84000" step="1000"></div>
+        <div class="field"><label for="lm-days">Target days to expiry</label><input id="lm-days" type="number" value="90" step="1" min="1"></div>
+        <div class="field"><label for="lm-type">Type</label>
+          <select id="lm-type"><option value="0">Call</option><option value="1">Put</option></select>
+        </div>
+        <div class="field" style="justify-content:flex-end;">
+          <button class="calc-run" id="lm-run-btn">Find real quote &amp; compare →</button>
+        </div>
+      </div>
+
+      <div class="calc-results" id="lm-results" style="margin-top:14px;">
+        <div class="calc-result"><div class="rlabel">Matched contract</div><div class="rval" id="lm-name" style="font-size:15px;">—</div><div class="rsub" id="lm-match-sub">closest real, live BTC option to your target</div></div>
+        <div class="calc-result"><div class="rlabel">Real market mark price</div><div class="rval" id="lm-real-price">—</div><div class="rsub" id="lm-real-sub">bid / ask shown here too</div></div>
+        <div class="calc-result"><div class="rlabel">This engine's Heston price</div><div class="rval" id="lm-model-price">—</div><div class="rsub">same real spot + real market IV as input</div></div>
+        <div class="calc-result"><div class="rlabel">Model vs. market gap</div><div class="rval" id="lm-gap">—</div><div class="rsub" id="lm-gap-sub">(model − market) / market</div></div>
+      </div>
+
+      <div class="calc-note" id="lm-note">Deribit quotes BTC options in BTC, not USD — this card converts using the real live index price it just fetched. Live data requires Deribit's API to be reachable from your network and browser; no login/key needed, and cross-origin access was confirmed open (not assumed). If a request is blocked (corporate network, ad-blocker, VPN), this card reports that plainly rather than failing silently or falling back to fake numbers.</div>
     </div>
   </section>
 
@@ -1407,6 +1456,162 @@
     // heston_calibration.json not available yet — the illustrative
     // defaults declared above stand as-is.
   });
+
+  // ---- live Deribit data (Phase 19) ----
+  // Both features below call Deribit's public REST API directly from the
+  // browser (https://www.deribit.com/api/v2/public/...). This is genuinely
+  // client-to-Deribit, no proxy or backend of ours involved — confirmed
+  // CORS-open by inspecting a real cross-origin response's
+  // Access-Control-Allow-* headers before building this, not assumed.
+  // No API key or auth is needed for these read-only public endpoints.
+  var DERIBIT_BASE = 'https://www.deribit.com/api/v2/public/';
+  var MONTH_MAP = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+
+  // Deribit option instrument names look like "BTC-27DEC26-90000-C"
+  // (underlying-expiryDate-strike-C|P). Parses that into a usable shape,
+  // or returns null for anything that doesn't match (defensive, since this
+  // is an external API whose exact contents aren't controlled by us).
+  function parseDeribitInstrument(name, nowMs){
+    if (typeof name !== 'string') return null;
+    var parts = name.split('-');
+    if (parts.length !== 4) return null;
+    var dateStr = parts[1];
+    if (dateStr.length < 7) return null;
+    var dd = parseInt(dateStr.slice(0, 2), 10);
+    var mon = MONTH_MAP[dateStr.slice(2, 5)];
+    var yy = parseInt(dateStr.slice(5, 7), 10);
+    var strike = parseFloat(parts[2]);
+    var type = parts[3] === 'C' ? 0 : (parts[3] === 'P' ? 1 : -1);
+    if (!isFinite(dd) || mon === undefined || !isFinite(yy) || !isFinite(strike) || type === -1) return null;
+    var expiryMs = Date.UTC(2000 + yy, mon, dd, 8, 0, 0); // Deribit options expire 08:00 UTC
+    var daysToExpiry = (expiryMs - nowMs) / 86400000;
+    return {strike: strike, days: daysToExpiry, type: type, name: name};
+  }
+
+  function fetchDeribitSpotAndChain(){
+    return Promise.all([
+      fetch(DERIBIT_BASE + 'get_index_price?index_name=btc_usd').then(function(r){ return r.json(); }),
+      fetch(DERIBIT_BASE + 'get_book_summary_by_currency?currency=BTC&kind=option').then(function(r){ return r.json(); })
+    ]).then(function(results){
+      var spot = results[0] && results[0].result && results[0].result.index_price;
+      var chain = results[1] && results[1].result;
+      if (!isFinite(spot) || spot <= 0) throw new Error('no index price in response');
+      if (!Array.isArray(chain) || chain.length === 0) throw new Error('empty options chain in response');
+      return {spot: spot, chain: chain};
+    });
+  }
+
+  // -- Section 06 add-on: "Fetch live BTC data" fills Spot + Volatility --
+  var liveBtn = document.getElementById('live-fetch-btn');
+  var liveBarText = document.getElementById('live-bar-text');
+  if (liveBtn) {
+    liveBtn.addEventListener('click', function(){
+      liveBtn.disabled = true;
+      liveBarText.className = 'live-bar-text';
+      liveBarText.textContent = 'fetching live BTC price + a real near-the-money option\'s implied vol from Deribit…';
+      var nowMs = Date.now();
+      fetchDeribitSpotAndChain().then(function(d){
+        var best = null, bestScore = Infinity;
+        for (var i = 0; i < d.chain.length; i++) {
+          var s = d.chain[i];
+          if (typeof s.mark_iv !== 'number' || s.mark_iv <= 0) continue;
+          var parsed = parseDeribitInstrument(s.instrument_name, nowMs);
+          if (!parsed || parsed.days < 1) continue;
+          var moneyness = Math.abs(parsed.strike - d.spot) / d.spot;
+          var tenorGap = Math.abs(parsed.days - 90) / 90;
+          var score = moneyness * 3 + tenorGap; // weight near-the-money over near-90d
+          if (score < bestScore) { bestScore = score; best = {parsed: parsed, iv: s.mark_iv}; }
+        }
+        if (!best) throw new Error('no live option with a usable implied vol was found');
+
+        document.getElementById('in-spot').value = Math.round(d.spot);
+        document.getElementById('in-vol').value = best.iv.toFixed(1);
+        liveBarText.className = 'live-bar-text ok';
+        liveBarText.textContent = 'loaded: spot $' + Math.round(d.spot).toLocaleString('en-US') +
+          ' · vol ' + best.iv.toFixed(1) + '% (real Deribit mark IV from ' + best.parsed.name +
+          ', ' + Math.round(best.parsed.days) + 'd out) — click "Price it" above to reprice';
+        if (Module) price();
+      }).catch(function(err){
+        liveBarText.className = 'live-bar-text err';
+        liveBarText.textContent = 'could not fetch live data (' + err.message + ') — Deribit may be unreachable from this network/browser (ad-blocker, VPN, or firewall). You can still enter numbers manually above.';
+      }).then(function(){
+        liveBtn.disabled = false;
+      });
+    });
+  }
+
+  // -- Section 13: real order-book lookup + reprice with this engine's Heston model --
+  var lmRunBtn = document.getElementById('lm-run-btn');
+  if (lmRunBtn) {
+    lmRunBtn.addEventListener('click', function(){
+      var targetStrike = parseFloat(document.getElementById('lm-strike').value);
+      var targetDays = parseFloat(document.getElementById('lm-days').value);
+      var targetType = parseInt(document.getElementById('lm-type').value, 10);
+      if (!isFinite(targetStrike) || !isFinite(targetDays)) return;
+
+      var statusEl = document.getElementById('live-market-status');
+      statusEl.className = 'calc-status';
+      statusEl.innerHTML = '<span class="pulse"></span><span>fetching the real live BTC order book from Deribit…</span>';
+      lmRunBtn.disabled = true;
+      var nowMs = Date.now();
+
+      fetchDeribitSpotAndChain().then(function(d){
+        var best = null, bestScore = Infinity, bestSummary = null;
+        for (var i = 0; i < d.chain.length; i++) {
+          var s = d.chain[i];
+          var parsed = parseDeribitInstrument(s.instrument_name, nowMs);
+          if (!parsed || parsed.days < 1 || parsed.type !== targetType) continue;
+          if (typeof s.mark_iv !== 'number' || s.mark_iv <= 0) continue;
+          if (typeof s.mark_price !== 'number') continue;
+          var strikeGap = Math.abs(parsed.strike - targetStrike) / targetStrike;
+          var dayGap = Math.abs(parsed.days - targetDays) / targetDays;
+          var score = strikeGap * 2 + dayGap;
+          if (score < bestScore) { bestScore = score; best = parsed; bestSummary = s; }
+        }
+        if (!best) throw new Error('no matching live contract found for that strike/expiry/type');
+
+        // Deribit quotes BTC options in BTC, not USD -- convert using the
+        // real live index price this same call just fetched.
+        var marketPriceUsd = bestSummary.mark_price * d.spot;
+        var bidUsd = (typeof bestSummary.bid_price === 'number') ? bestSummary.bid_price * d.spot : null;
+        var askUsd = (typeof bestSummary.ask_price === 'number') ? bestSummary.ask_price * d.spot : null;
+        var ivDecimal = bestSummary.mark_iv / 100;
+        var T = best.days / 365;
+        var rate = (function(){
+          var r = parseFloat(document.getElementById('in-rate').value);
+          return isFinite(r) ? r / 100 : 0.05;
+        })();
+
+        var modelPrice = Module.ccall('bridge_heston_price', 'number',
+          ['number','number','number','number','number','number','number','number','number','number','number'],
+          [d.spot, rate, 0, best.strike, T, best.type,
+           ivDecimal * ivDecimal, hestonKappa, ivDecimal * ivDecimal, hestonXi, hestonRho]);
+
+        document.getElementById('lm-name').textContent = best.name;
+        document.getElementById('lm-match-sub').textContent = Math.round(best.days) + 'd out, strike $' +
+          best.strike.toLocaleString('en-US') + ' — closest live match to your $' +
+          targetStrike.toLocaleString('en-US') + ' / ' + targetDays + 'd target';
+        document.getElementById('lm-real-price').textContent = fmtUSD(marketPriceUsd);
+        document.getElementById('lm-real-sub').textContent = (bidUsd !== null && askUsd !== null) ?
+          ('bid ' + fmtUSD(bidUsd) + ' / ask ' + fmtUSD(askUsd) + ' · mark IV ' + bestSummary.mark_iv.toFixed(1) + '%') :
+          ('mark IV ' + bestSummary.mark_iv.toFixed(1) + '%');
+        document.getElementById('lm-model-price').textContent = fmtUSD(modelPrice);
+        var gapPct = (modelPrice - marketPriceUsd) / marketPriceUsd * 100;
+        var gapEl = document.getElementById('lm-gap');
+        gapEl.textContent = (gapPct >= 0 ? '+' : '') + gapPct.toFixed(2) + '%';
+        gapEl.className = 'rval' + (Math.abs(gapPct) > 15 ? ' loss' : '');
+        document.getElementById('lm-gap-sub').textContent = 'this engine\'s Heston price vs. the real live market mark';
+
+        statusEl.className = 'calc-status ready';
+        statusEl.innerHTML = '<span class="pulse"></span><span>live — spot $' + Math.round(d.spot).toLocaleString('en-US') + ', matched against ' + d.chain.length + ' real live BTC option quotes</span>';
+      }).catch(function(err){
+        statusEl.className = 'calc-status err';
+        statusEl.innerHTML = '<span class="pulse"></span><span>could not complete live lookup (' + err.message + ') — Deribit may be unreachable from this network/browser</span>';
+      }).then(function(){
+        lmRunBtn.disabled = false;
+      });
+    });
+  }
 })();
 </script>
 <script>

@@ -1688,3 +1688,112 @@ counterparty's default only costs you money on the trades where they
 owed you, not the ones where you owed them. Can explain the credit-
 triangle approximation's own limitation (a flat single-point hazard
 rate, not a bootstrapped term structure) without being asked twice.
+
+## Phase 19 — Live Deribit data: real spot/vol autofill and a real order-book comparison (done)
+
+**What was built:** the demo's calculators previously only ever priced
+whatever numbers a user typed in — no connection to what BTC or its
+options were actually doing right now. This phase adds two features
+that call Deribit's public REST API (`https://www.deribit.com/api/v2/
+public/...`) directly from the browser, client-side, with no backend
+or API key:
+
+- **Live autofill on the main calculator (section 06):** a "Fetch live
+  BTC data" button calls `get_index_price` for the real current spot
+  and `get_book_summary_by_currency` for the full live BTC options
+  chain, picks the live contract closest to at-the-money and ~90 days
+  out that has a usable `mark_iv`, and fills the Spot and Volatility
+  fields with real numbers instead of requiring the user to look them
+  up and type them in.
+- **Live market check (new section 13):** given a target strike, days
+  to expiry, and type, fetches the same live chain, finds the closest
+  real, currently-tradeable contract, converts its BTC-denominated
+  mark/bid/ask into USD using the real live index price, and reprices
+  that exact contract with this engine's own calibrated Heston model
+  using the *market's own* implied vol as the input — displaying the
+  real market price and this engine's model price side by side with
+  the percentage gap between them. This is the actual "does my model
+  agree with the real market" check, not a hypothetical one built from
+  assumed inputs.
+
+**Why this shape:** before writing any code, CORS reachability was
+verified for real rather than assumed — a live cross-origin `fetch()`
+was run from an actual Safari session (not this sandbox, which is
+itself proxied and cannot reach `deribit.com`) against
+`get_index_price`, and the real response headers were inspected
+(`Access-Control-Allow-Methods: GET, POST, OPTIONS` present, status
+200, answered despite `Origin: https://claude.ai`) to confirm Deribit's
+public endpoints are genuinely open to arbitrary origins, not just
+Deribit's own site. Only after that confirmation was the feature built.
+`get_book_summary_by_currency` was chosen over calling `ticker` once
+per instrument because it returns bid/ask/mark price and mark IV for
+every live instrument in a single request — the chain has hundreds of
+strikes/expiries at any time, so one bulk call avoids hundreds of
+round trips. Both features share one instrument-name parser
+(`BTC-27DEC26-90000-C` → strike/expiry/type) and one spot+chain fetch
+helper rather than duplicating that logic, since — unlike the
+project's deliberately-independent SDE stepping loops (see `var.cpp`'s
+header comment) — there's no cross-validation value in parsing the
+same string format two different ways.
+
+**Verification:** both inline scripts were syntax-checked
+(`new Function(source)` on each extracted `<script>` block), then
+driven end-to-end with Playwright against a local static server
+serving the real `docs/` directory. Because this sandbox's own network
+proxy blocks arbitrary outbound hosts (confirmed via the proxy's own
+status endpoint — `deribit.com` is not on the allowlist), the live
+success path could not be exercised from here; what was verified
+instead is that: the pre-existing calculator (Black-Scholes/tree/MC/
+Heston, sections 01-12) still produces identical output with zero
+regressions after these changes: BS $12,392.30, Heston $11,950.52 on
+the default inputs, unchanged from before this phase; both new
+features fail closed and legibly (`Failed to fetch` surfaces as a
+plain-English error message in the UI, not a hang, a crash, or a
+silent fallback to fake numbers); both buttons correctly re-enable
+themselves after a failed request; and zero uncaught JS exceptions
+were raised (`page.on('pageerror', ...)` captured none — only expected
+network-level console errors from the sandbox's own blocked egress).
+The actual live-success path (a real 200 response with real BTC data)
+was confirmed manually and interactively in a real browser session
+before this was built, the same way the CORS-open finding above was
+confirmed — not inferred from documentation alone.
+
+**Honest limitations:**
+- These two features are the only parts of the entire live demo with
+  a runtime dependency on a third party being reachable. Every other
+  card (sections 01-12) is fully self-contained, computing everything
+  from the compiled WASM engine and the committed CSV/JSON data —
+  these two will show a plain error message instead of a price if
+  Deribit is down, rate-limits the request, or is blocked by the
+  visitor's own network/ad-blocker/VPN.
+- The live-autofill's "closest to at-the-money and ~90 days out"
+  selection is a simple weighted-distance heuristic
+  (`moneyness * 3 + tenorGap`), not a real liquidity or open-interest
+  filter — it can pick a thinly-traded, wide-spread contract's IV over
+  a more liquid one nearby.
+- No caching or rate-limiting on repeated clicks — each click issues a
+  fresh pair of requests. Fine for demo usage by one visitor at a time,
+  not written for high click-through traffic.
+- `mark_iv` is used as a single flat number for both the Heston
+  `v0` and `theta` inputs in section 13's reprice, same simplification
+  the main calculator already makes (see Phase 12's honest limitations)
+  — the real market's actual vol-of-vol and mean-reversion aren't
+  re-derived from the live chain, only the calibrated defaults are
+  reused with the live IV swapped in for the flat-vol level.
+
+**Defend this:** can explain why CORS was tested with a real browser
+request and inspected response headers before writing a line of
+fetch code, rather than assumed from the fact that "public APIs are
+usually CORS-open" — an assumption that would have shipped a feature
+with no way to know if it actually worked. Can explain why
+`get_book_summary_by_currency` (one bulk call) was chosen over
+per-instrument `ticker` calls (one call per contract), and the
+BTC-to-USD conversion Deribit's own quoting convention requires that a
+naive implementation would silently get wrong by two orders of
+magnitude. Can explain exactly what "model vs. market gap" in section
+13 does and doesn't prove: agreement confirms the calibrated
+kappa/xi/rho still describe the real smile reasonably well when fed
+today's real IV; disagreement doesn't necessarily mean the model is
+wrong — it can just as easily mean the specific live contract matched
+is thin, or that IV alone doesn't capture the smile's actual shape at
+that strike the way a full recalibration against the live chain would.

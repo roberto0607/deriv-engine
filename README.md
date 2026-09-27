@@ -32,7 +32,15 @@ cards close out the risk side of the engine: one decomposes a realized
 move on the example book into the Greeks that actually drove it, the
 other prices in a counterparty's default risk on a real position —
 even the CDS-spread-to-hazard-rate conversion runs through the
-compiled engine rather than a JS one-liner.
+compiled engine rather than a JS one-liner. Phase 19 connects the demo
+to the live market itself: a "Fetch live BTC data" button pulls the
+real current spot and a real near-the-money option's market-implied
+vol straight from Deribit's public API into the main calculator, and a
+dedicated live market-check card finds the closest real, currently-
+tradeable BTC option to a target strike/expiry and reprices that exact
+contract with this engine's calibrated Heston model — displaying the
+real market price and the model's price side by side, not a
+theoretical number in isolation.
 
 ## Headline result
 
