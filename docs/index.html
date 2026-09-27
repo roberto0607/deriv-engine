@@ -714,7 +714,7 @@
 
   <section>
     <div class="section-head"><span class="section-num">10</span><h2>Live market check: model vs. the real order book</h2></div>
-    <p class="section-sub">Every other card above prices whatever numbers you type in — this one pulls Bitcoin's real live price and the real live BTC options order book directly from Deribit's public API (confirmed CORS-open from a browser, no backend or API key needed), finds the closest real, currently-tradeable contract to your target, and reprices it with this engine's own calibrated Heston model using the market's own implied vol as the input. This is the actual "does my model agree with the real market" check, not a hypothetical one.</p>
+    <p class="section-sub">Every other card above prices whatever numbers you type in — this one pulls Bitcoin's real live price and the real live BTC options order book directly from Deribit's public API (confirmed CORS-open from a browser, no backend or API key needed), finds the closest real, currently-tradeable contract to your target, and reprices it two ways: this engine's calibrated Heston model, with its variance level set from a real SVI curve fit to that whole expiry's live chain (not just this one contract's own quote), and a plain Black-Scholes price at that same fitted curve's vol for this exact strike. This is the actual "does my model agree with the real market" check, not a hypothetical one.</p>
     <div class="calc-card">
       <div class="calc-status ready" id="live-market-status"><span class="pulse"></span><span>uses the same compiled engine as the calculators above, plus a live client-side call to Deribit's public API</span></div>
 
@@ -732,11 +732,13 @@
       <div class="calc-results" id="lm-results" style="margin-top:14px;">
         <div class="calc-result"><div class="rlabel">Matched contract</div><div class="rval" id="lm-name" style="font-size:15px;">—</div><div class="rsub" id="lm-match-sub">closest real, live BTC option to your target</div></div>
         <div class="calc-result"><div class="rlabel">Real market mark price</div><div class="rval" id="lm-real-price">—</div><div class="rsub" id="lm-real-sub">bid / ask shown here too</div></div>
-        <div class="calc-result"><div class="rlabel">This engine's Heston price</div><div class="rval" id="lm-model-price">—</div><div class="rsub">same real spot + real market IV as input</div></div>
-        <div class="calc-result"><div class="rlabel">Model vs. market gap</div><div class="rval" id="lm-gap">—</div><div class="rsub" id="lm-gap-sub">(model − market) / market</div></div>
+        <div class="calc-result"><div class="rlabel">This engine's Heston price</div><div class="rval" id="lm-model-price">—</div><div class="rsub" id="lm-model-sub">real spot + SVI-fitted variance for this expiry</div></div>
+        <div class="calc-result"><div class="rlabel">Heston vs. market gap</div><div class="rval" id="lm-gap">—</div><div class="rsub" id="lm-gap-sub">(model − market) / market</div></div>
+        <div class="calc-result"><div class="rlabel">SVI-implied price (curve fit)</div><div class="rval" id="lm-svi-price">—</div><div class="rsub" id="lm-svi-sub">Black-Scholes at the fitted SVI vol for this exact strike</div></div>
+        <div class="calc-result"><div class="rlabel">SVI vs. market gap</div><div class="rval" id="lm-svi-gap">—</div><div class="rsub" id="lm-svi-gap-sub">(SVI-implied − market) / market</div></div>
       </div>
 
-      <div class="calc-note" id="lm-note">Deribit quotes BTC options in BTC, not USD — this card converts using the real live index price it just fetched. Live data requires Deribit's API to be reachable from your network and browser; no login/key needed, and cross-origin access was confirmed open (not assumed). If a request is blocked (corporate network, ad-blocker, VPN), this card reports that plainly rather than failing silently or falling back to fake numbers.</div>
+      <div class="calc-note" id="lm-note">Deribit quotes BTC options in BTC, not USD — this card converts using the real live index price it just fetched. The Heston price's v0/theta come from fitting a real SVI curve to every live, liquid contract at this exact expiry (same 5-parameter fit and moneyness/outlier filters as section 11) rather than this one contract's own quote — a real, whole-expiry read on the vol level, not a single noisy point. If that expiry doesn't have enough real, liquid quotes to fit a curve (calibrate_svi's own minimum is 5), this falls back honestly to that one contract's own market IV for Heston, and the SVI-implied row shows "—" rather than a number nobody should trust. Live data requires Deribit's API to be reachable from your network and browser; no login/key needed, and cross-origin access was confirmed open (not assumed). If a request is blocked (corporate network, ad-blocker, VPN), this card reports that plainly rather than failing silently or falling back to fake numbers.</div>
     </div>
   </section>
 
@@ -1529,6 +1531,85 @@
     });
   }
 
+  // Deribit reports an extrapolated "mark IV" even for contracts with
+  // essentially no real market -- a handful of illiquid, deep-wing quotes
+  // near expiry can carry mark IVs of several hundred percent. Shared by
+  // both the Live Market Check card (section 10) and the SVI surface card
+  // (section 11): a standard robust-statistics filter (median absolute
+  // deviation, k=4) drops any quote whose mark IV is wildly off the rest
+  // of that expiry's chain before it's allowed near a least-squares fit.
+  function madTrim(points){
+    if (points.length < 3) return points;
+    var ivs = points.map(function(p){ return p.iv; }).sort(function(a,b){ return a - b; });
+    var mid = Math.floor(ivs.length / 2);
+    var median = (ivs.length % 2 === 0) ? (ivs[mid - 1] + ivs[mid]) / 2 : ivs[mid];
+    var devs = points.map(function(p){ return Math.abs(p.iv - median); }).sort(function(a,b){ return a - b; });
+    var dmid = Math.floor(devs.length / 2);
+    var mad = (devs.length % 2 === 0) ? (devs[dmid - 1] + devs[dmid]) / 2 : devs[dmid];
+    var threshold = 4 * Math.max(mad, 0.02);  // floor avoids over-trimming an already-tight smile
+    return points.filter(function(p){ return Math.abs(p.iv - median) <= threshold; });
+  }
+
+  function sviWriteDoubleArrayShared(values){
+    var ptr = Module._malloc(values.length * 8);
+    for (var i = 0; i < values.length; i++) Module.setValue(ptr + i * 8, values[i], 'double');
+    return ptr;
+  }
+
+  // Fits one SVI curve to every real, live contract at (approximately)
+  // targetDays out, in the same moneyness band and with the same outlier
+  // trim section 11's full-chain fit uses -- used by the Live Market
+  // Check card (section 10) to make its Heston comparison smile-aware
+  // instead of keyed off one single contract's own quote. Returns null
+  // when there simply aren't enough real, liquid quotes at that expiry to
+  // fit a 5-parameter curve (calibrate_svi's own minimum is 5 points) --
+  // callers fall back to the single-contract IV in that case, honestly.
+  function fitSviCurveForExpiry(chain, spot, nowMs, targetDays, rate){
+    var points = [];
+    var T = targetDays / 365.0;
+    for (var i = 0; i < chain.length; i++) {
+      var s = chain[i];
+      if (typeof s.mark_iv !== 'number' || s.mark_iv <= 0) continue;
+      var parsed = parseDeribitInstrument(s.instrument_name, nowMs);
+      if (!parsed || parsed.days < 1) continue;
+      if (Math.round(parsed.days) !== targetDays) continue;
+      var moneyness = parsed.strike / spot;
+      if (moneyness <= 0.7 || moneyness >= 1.4) continue;
+      points.push({strike: parsed.strike, iv: s.mark_iv / 100.0});
+      T = parsed.days / 365.0;  // use the real day-count for whichever contract set T
+    }
+    points = madTrim(points);
+    if (points.length < 5) return null;
+
+    var strikes = points.map(function(p){ return p.strike; });
+    var ivs = points.map(function(p){ return p.iv; });
+    var strikesPtr = sviWriteDoubleArrayShared(strikes);
+    var ivsPtr = sviWriteDoubleArrayShared(ivs);
+    var outPtr = Module._malloc(10 * 8);
+
+    Module.ccall('bridge_svi_fit', null,
+      ['number','number','number','number','number','number','number'],
+      [strikesPtr, ivsPtr, strikes.length, spot, rate, T, outPtr]);
+
+    var result = {
+      params: {
+        a: Module.getValue(outPtr, 'double'),
+        b: Module.getValue(outPtr + 8, 'double'),
+        rho: Module.getValue(outPtr + 16, 'double'),
+        m: Module.getValue(outPtr + 24, 'double'),
+        sigma: Module.getValue(outPtr + 32, 'double')
+      },
+      converged: Module.getValue(outPtr + 40, 'double') > 0.5,
+      numPoints: Math.round(Module.getValue(outPtr + 56, 'double')),
+      forward: Module.getValue(outPtr + 72, 'double'),
+      T: T
+    };
+    Module._free(strikesPtr); Module._free(ivsPtr); Module._free(outPtr);
+
+    if (!result.converged) return null;
+    return result;
+  }
+
   // -- Section 06 add-on: "Fetch live BTC data" fills Spot + Volatility on EVERY calculator on the page --
   var liveBtn = document.getElementById('live-fetch-btn');
   var liveBarText = document.getElementById('live-bar-text');
@@ -1638,10 +1719,36 @@
           return isFinite(r) ? r / 100 : 0.05;
         })();
 
+        // Prefer a smile-consistent variance level over this one contract's
+        // own (possibly thin/noisy) quote: fit a real SVI curve to every
+        // live, liquid contract at this same expiry and read the ATM
+        // variance off it. Falls back to the old flat-IV behavior, openly,
+        // when there simply aren't enough real quotes at this expiry.
+        var sviFit = fitSviCurveForExpiry(d.chain, d.spot, nowMs, Math.round(best.days), rate);
+        var v0, theta, sviPriceUsd = null, sviVolAtStrike = null;
+        if (sviFit) {
+          var atmVol = Module.ccall('bridge_svi_vol', 'number',
+            ['number','number','number','number','number','number','number','number'],
+            [sviFit.params.a, sviFit.params.b, sviFit.params.rho, sviFit.params.m, sviFit.params.sigma,
+             sviFit.forward, sviFit.forward, sviFit.T]);
+          v0 = atmVol * atmVol;
+          theta = v0;
+          sviVolAtStrike = Module.ccall('bridge_svi_vol', 'number',
+            ['number','number','number','number','number','number','number','number'],
+            [sviFit.params.a, sviFit.params.b, sviFit.params.rho, sviFit.params.m, sviFit.params.sigma,
+             sviFit.forward, best.strike, sviFit.T]);
+          sviPriceUsd = Module.ccall('bridge_bs_price', 'number',
+            ['number','number','number','number','number','number','number'],
+            [d.spot, rate, 0, sviVolAtStrike, best.strike, T, best.type]);
+        } else {
+          v0 = ivDecimal * ivDecimal;
+          theta = v0;
+        }
+
         var modelPrice = Module.ccall('bridge_heston_price', 'number',
           ['number','number','number','number','number','number','number','number','number','number','number'],
           [d.spot, rate, 0, best.strike, T, best.type,
-           ivDecimal * ivDecimal, hestonKappa, ivDecimal * ivDecimal, hestonXi, hestonRho]);
+           v0, hestonKappa, theta, hestonXi, hestonRho]);
 
         document.getElementById('lm-name').textContent = best.name;
         document.getElementById('lm-match-sub').textContent = Math.round(best.days) + 'd out, strike $' +
@@ -1652,11 +1759,28 @@
           ('bid ' + fmtUSD(bidUsd) + ' / ask ' + fmtUSD(askUsd) + ' · mark IV ' + bestSummary.mark_iv.toFixed(1) + '%') :
           ('mark IV ' + bestSummary.mark_iv.toFixed(1) + '%');
         document.getElementById('lm-model-price').textContent = fmtUSD(modelPrice);
+        document.getElementById('lm-model-sub').textContent = sviFit ?
+          ('v0/theta from a ' + sviFit.numPoints + '-point SVI fit at this expiry') :
+          ('too few live quotes at this expiry to fit a curve — used this contract\'s own ' + bestSummary.mark_iv.toFixed(1) + '% IV instead');
         var gapPct = (modelPrice - marketPriceUsd) / marketPriceUsd * 100;
         var gapEl = document.getElementById('lm-gap');
         gapEl.textContent = (gapPct >= 0 ? '+' : '') + gapPct.toFixed(2) + '%';
         gapEl.className = 'rval' + (Math.abs(gapPct) > 15 ? ' loss' : '');
-        document.getElementById('lm-gap-sub').textContent = 'this engine\'s Heston price vs. the real live market mark';
+
+        var sviPriceEl = document.getElementById('lm-svi-price');
+        var sviGapEl = document.getElementById('lm-svi-gap');
+        if (sviPriceUsd !== null) {
+          sviPriceEl.textContent = fmtUSD(sviPriceUsd);
+          document.getElementById('lm-svi-sub').textContent = 'Black-Scholes at ' + (sviVolAtStrike * 100).toFixed(1) + '% (fitted SVI vol at this strike)';
+          var sviGapPct = (sviPriceUsd - marketPriceUsd) / marketPriceUsd * 100;
+          sviGapEl.textContent = (sviGapPct >= 0 ? '+' : '') + sviGapPct.toFixed(2) + '%';
+          sviGapEl.className = 'rval' + (Math.abs(sviGapPct) > 15 ? ' loss' : '');
+        } else {
+          sviPriceEl.textContent = '—';
+          document.getElementById('lm-svi-sub').textContent = 'not enough live contracts at this expiry to fit a curve';
+          sviGapEl.textContent = '—';
+          sviGapEl.className = 'rval';
+        }
 
         statusEl.className = 'calc-status ready';
         statusEl.innerHTML = '<span class="pulse"></span><span>live — spot $' + Math.round(d.spot).toLocaleString('en-US') + ', matched against ' + d.chain.length + ' real live BTC option quotes</span>';
@@ -1797,28 +1921,9 @@
           byExpiry[days].points.push({strike: parsed.strike, iv: s.mark_iv / 100.0});
         }
 
-        // Deribit reports an extrapolated "mark IV" even for contracts with
-        // essentially no real market -- a handful of illiquid, deep-wing
-        // quotes near expiry can carry mark IVs of several hundred percent.
-        // A plain least-squares fit lets a few such points, which nobody
-        // actually trades, drag the whole curve away from the real, liquid
-        // part of the smile (verified: an untrimmed bucket with a few
-        // wild wing quotes produced rmse in the hundreds of vol points).
-        // Trim with a standard robust-statistics filter -- median absolute
-        // deviation, k=4 -- before fitting, so a small number of outliers
-        // can't dominate a fit meant to represent the tradeable smile.
-        function madTrim(points){
-          if (points.length < 3) return points;
-          var ivs = points.map(function(p){ return p.iv; }).sort(function(a,b){ return a - b; });
-          var mid = Math.floor(ivs.length / 2);
-          var median = (ivs.length % 2 === 0) ? (ivs[mid - 1] + ivs[mid]) / 2 : ivs[mid];
-          var devs = points.map(function(p){ return Math.abs(p.iv - median); }).sort(function(a,b){ return a - b; });
-          var dmid = Math.floor(devs.length / 2);
-          var mad = (devs.length % 2 === 0) ? (devs[dmid - 1] + devs[dmid]) / 2 : devs[dmid];
-          var threshold = 4 * Math.max(mad, 0.02);  // floor avoids over-trimming an already-tight smile
-          return points.filter(function(p){ return Math.abs(p.iv - median) <= threshold; });
-        }
-
+        // Outlier trim: see the shared madTrim() defined near
+        // fetchDeribitSpotAndChain() above, also used by the Live Market
+        // Check card's own per-expiry SVI fit (section 10).
         sviFits = {};
         var fitDaysList = [];
         Object.keys(byExpiry).forEach(function(daysStr){

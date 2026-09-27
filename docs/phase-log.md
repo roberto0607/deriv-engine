@@ -2142,3 +2142,75 @@ short-dated difficulty, but a real, honest number, not a broken one.
 Nothing in `calibrate_svi`, `svi.cpp`, or the WASM bridge changed; this
 was a live-demo-only fix (`docs/index.html`), so no rebuild of
 `deriv_engine.js` was needed.
+
+## Phase 22 — Wiring the fitted SVI surface into the Live Market Check card (done)
+
+**What:** Section 10's Heston-vs-real-market comparison used to set Heston's
+`v0`/`theta` from the single matched contract's own quoted mark IV, squared
+— i.e., feeding the model the market's own answer for the exact contract
+being checked, off one (possibly thin, possibly noisy) quote. This phase
+wires it to Section 11's SVI machinery instead: before repricing, it fits
+a real SVI curve to every live, liquid contract at that same expiry (same
+5-parameter fit, same 0.7-1.4x moneyness band, same median/MAD outlier
+trim as section 11 -- both cards now share one `madTrim()` and a new
+`fitSviCurveForExpiry()` helper, rather than duplicating the logic) and
+reads the ATM variance off the fitted curve for `v0`/`theta`. A second,
+independent price is now also shown: plain Black-Scholes at the fitted
+curve's vol for the exact target strike -- so the card shows three real
+numbers side by side for the same live contract: the real market mark,
+this engine's Heston price (now smile-informed), and a pure curve-fit
+price. When an expiry doesn't have enough real, liquid quotes to fit a
+curve (`calibrate_svi`'s own minimum is 5 points), the card says so
+plainly and falls back to the old single-contract-IV behavior for Heston,
+with the SVI-implied row showing "--" rather than a number built on too
+little data.
+
+**Why:** a single contract's own IV is the noisiest possible read on "the
+vol level" for its expiry -- it's one data point, possibly on a thin
+strike, with no information from the rest of that expiry's real chain.
+The whole point of Section 11's SVI fit is a smoothed, arbitrage-checked
+read of the *entire* live expiry; Section 10 had that machinery sitting
+next to it, unused, since Phase 21 shipped. This also turns "does my
+model agree with the market" into a genuine three-way comparison a real
+desk would ask: does a stochastic-vol process (Heston) agree with the
+market, does a pure curve fit (SVI) agree with the market, and do the two
+models agree with *each other* -- three different, independently
+checkable claims, not one.
+
+**Verification:** confirmed with two Playwright runs against a mocked
+live chain. A well-populated synthetic 90-day expiry (14 real points
+after trimming) correctly fit an SVI curve, derived a 41.4% ATM vol, and
+produced a Heston price (~$6,938 for a near-ATM 90-day call at that vol
+and spot) matching a hand-computed ATM-call approximation
+(`spot × vol × sqrt(T / 2π)`) almost exactly -- confirms the pipeline,
+not just that it produced *a* number. A deliberately thin synthetic
+5-day expiry (3 contracts, below `calibrate_svi`'s 5-point minimum)
+correctly triggered the documented fallback: Heston used the single
+contract's own IV, and the SVI-implied row showed "--" with an honest
+explanation, instead of silently fitting a meaningless curve to 3 points
+or crashing.
+
+**Honest limitations:**
+- Heston's `kappa`/`xi`/`rho` still come from the separate, real
+  multi-expiry calibration in `heston_calibration.json` (unchanged by
+  this phase) -- only `v0`/`theta` are now expiry-specific and
+  SVI-derived. A single Heston process fit across many expiries and a
+  per-expiry SVI-implied variance level are two different, real things;
+  this phase doesn't reconcile them into one internally-consistent model,
+  it presents both as what they are.
+- The SVI-implied price uses plain Black-Scholes, not Heston, at the
+  fitted vol -- it's a genuinely different pricing approach from the
+  Heston row, which is the point of showing both, not an oversight.
+- No dividend yield adjustment beyond what already existed elsewhere in
+  the engine (q=0, matching every other card's BTC-scope assumption).
+
+**Defend this:** can explain exactly why feeding a contract its own
+quoted IV back into a model and comparing against that same contract's
+market price is weaker evidence than it looks (the model is partly
+reproducing information it was just handed), and why sourcing `v0`/theta
+from the whole expiry's fitted curve instead is a real, if partial, fix
+for that. Can explain why Heston's process parameters and SVI's per-
+expiry level aren't merged into one calibration, and why that's an
+honest choice rather than a shortcut. Can point to the exact hand-checked
+number (the 90-day ATM call) that confirms the wiring computes something
+real, not just something plausible-looking.

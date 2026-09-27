@@ -68,6 +68,18 @@ for a 5-parameter curve to track that the butterfly check actively fails
 at 1, 3, and 4 days out — a real, known property of raw SVI on very
 short-dated smiles, reported plainly rather than hidden.
 
+Phase 22 wires that SVI machinery into the live market-check card instead
+of leaving it self-contained: rather than setting Heston's `v0`/`theta`
+from the one matched contract's own quoted IV, the card now fits an SVI
+curve to that contract's whole expiry and reads the ATM variance off it —
+a smile-informed level instead of a single, possibly noisy quote — and
+adds a second, independent price alongside it: plain Black-Scholes at the
+fitted curve's vol for the exact target strike. The card now shows three
+real numbers for one live contract at once — the real market mark, a
+stochastic-vol model price, and a pure curve-fit price — with an honest
+fallback to the old single-quote behavior when an expiry doesn't have
+enough live contracts to fit a curve.
+
 ## Headline result
 
 Pulled the full live BTC options chain from Deribit (904 real
